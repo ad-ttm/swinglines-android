@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:keepScreenOn="true">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <com.testtube.swinglines.OverlayView
+        android:id="@+id/overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="10dp"
+        android:layout_gravity="top">
+
+        <Button
+            android:id="@+id/btnFlip"
+            style="@style/Pill"
+            android:text="@string/flip" />
+
+        <Button
+            android:id="@+id/btnCaps"
+            style="@style/Pill"
+            android:text="@string/caps" />
+
+        <TextView
+            android:id="@+id/recIndicator"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="8dp"
+            android:background="@drawable/rec_pill"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:text="@string/rec"
+            android:visibility="gone" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/btnSetups"
+            style="@style/Pill"
+            android:text="@string/setups" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_gravity="bottom"
+        android:padding="8dp">
+
+        <LinearLayout
+            android:id="@+id/colorRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btnLine" style="@style/Tool" android:text="@string/line" />
+            <Button android:id="@+id/btnDraw" style="@style/Tool" android:text="@string/draw" />
+            <Button android:id="@+id/btnCircle" style="@style/Tool" android:text="@string/circle" />
+            <Button android:id="@+id/btnGrid" style="@style/Tool" android:text="@string/grid" />
+            <Button android:id="@+id/btnUndo" style="@style/Tool" android:text="@string/undo" />
+            <Button android:id="@+id/btnClear" style="@style/Tool" android:text="@string/clear" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btnRecord"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/rec_button"
+            android:contentDescription="@string/record" />
+    </LinearLayout>
+
+</FrameLayout>

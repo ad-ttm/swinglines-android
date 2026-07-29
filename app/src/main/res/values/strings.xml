@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SwingLines</string>
+    <string name="flip">⟳ Flip</string>
+    <string name="caps">Camera info</string>
+    <string name="setups">☰ Setups</string>
+    <string name="line">╱ Line</string>
+    <string name="draw">✎ Draw</string>
+    <string name="circle">◯ Circle</string>
+    <string name="grid"># Grid</string>
+    <string name="undo">↶ Undo</string>
+    <string name="clear">✕ Clear</string>
+    <string name="record">Record</string>
+    <string name="rec">● REC</string>
+</resources>
