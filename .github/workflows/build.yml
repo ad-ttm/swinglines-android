@@ -30,7 +30,9 @@ jobs:
         run: gradle assembleDebug
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk SwingLines-v0.1-build${{ github.run_number }}.apk
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          cp app/build/outputs/apk/debug/app-debug.apk SwingLines-v${VERSION}-build${{ github.run_number }}.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

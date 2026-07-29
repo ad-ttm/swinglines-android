@@ -5,8 +5,8 @@
     android:background="#000000"
     android:keepScreenOn="true">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
+    <TextureView
+        android:id="@+id/previewTexture"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
@@ -26,6 +26,11 @@
             android:id="@+id/btnFlip"
             style="@style/Pill"
             android:text="@string/flip" />
+
+        <Button
+            android:id="@+id/btnSpeed"
+            style="@style/Pill"
+            android:text="@string/speed_normal" />
 
         <Button
             android:id="@+id/btnCaps"
@@ -93,5 +98,79 @@
             android:background="@drawable/rec_button"
             android:contentDescription="@string/record" />
     </LinearLayout>
+
+    <!-- ============ instant replay panel ============ -->
+    <FrameLayout
+        android:id="@+id/reviewPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone">
+
+        <VideoView
+            android:id="@+id/reviewVideo"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center" />
+
+        <com.testtube.swinglines.OverlayView
+            android:id="@+id/reviewOverlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/fpsBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="12dp"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="7dp"
+            android:background="@drawable/pill_bg"
+            android:textColor="#7EE787"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:text="@string/fps_placeholder" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:orientation="vertical"
+            android:background="#CC0B0F0D"
+            android:padding="8dp">
+
+            <SeekBar
+                android:id="@+id/reviewSeek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/btnRevPlay" style="@style/Tool" android:text="@string/play" />
+                <Button android:id="@+id/btnRevBack" style="@style/Tool" android:text="@string/frame_back" />
+                <Button android:id="@+id/btnRevFwd" style="@style/Tool" android:text="@string/frame_fwd" />
+                <Button android:id="@+id/btnSpeedSlow" style="@style/Tool" android:text="@string/spd_slowest" />
+                <Button android:id="@+id/btnSpeedQuarter" style="@style/Tool" android:text="@string/spd_quarter" />
+                <Button android:id="@+id/btnSpeedFull" style="@style/Tool" android:text="@string/spd_full" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/btnRevUndo" style="@style/Tool" android:text="@string/undo" />
+                <Button android:id="@+id/btnRevClear" style="@style/Tool" android:text="@string/clear" />
+                <Button android:id="@+id/btnShare" style="@style/Tool" android:text="@string/share" />
+                <Button android:id="@+id/btnRevClose" style="@style/Tool" android:text="@string/back_to_camera" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 
 </FrameLayout>

@@ -2,11 +2,12 @@
 
 Golf swing camera with persistent overlay lines.
 
-**v0.1 skeleton:** live camera preview, drawing tools (line / freehand / circle,
-5 colours, draggable endpoints), rule-of-thirds grid, undo/clear, named line
-setups that persist between sessions, standard-fps video recording to
-`Movies/SwingLines`, and a "Camera info" report showing the phone's supported
-high-speed (slo-mo) modes - which shapes the 240fps work in v0.2.
+**v0.2:** everything from v0.1 (drawing tools, setups, grid, camera report)
+plus high-speed slow-motion recording (240/120fps via Camera2 constrained
+high-speed sessions, speed picker in the top bar) and an instant in-app replay
+that opens when recording stops - scrubbing, ⅛/¼/1x playback, true
+frame-by-frame stepping at the recorded frame rate, drawing over the replay,
+and a share button.
 
 ## Building
 
