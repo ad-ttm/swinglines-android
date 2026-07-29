@@ -5,3 +5,9 @@ local.properties
 .idea/
 .DS_Store
 captures/
+
+# Signing keys never belong in this repo - it is public.
+# CI writes signing/swinglines.keystore from repo secrets at build time.
+signing/
+*.keystore
+*.jks

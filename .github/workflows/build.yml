@@ -26,8 +26,40 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Restore shared signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SWINGLINES_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "SWINGLINES_KEYSTORE_BASE64 secret is not set" >&2
+            exit 1
+          fi
+          mkdir -p signing
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > signing/swinglines.keystore
+          echo "Keystore restored, $(stat -c%s signing/swinglines.keystore) bytes"
+
       - name: Build debug APK
+        env:
+          SWINGLINES_STORE_PASSWORD: ${{ secrets.SWINGLINES_STORE_PASSWORD }}
+          SWINGLINES_KEY_ALIAS: ${{ secrets.SWINGLINES_KEY_ALIAS }}
+          SWINGLINES_KEY_PASSWORD: ${{ secrets.SWINGLINES_KEY_PASSWORD }}
         run: gradle assembleDebug
+
+      - name: Confirm APK is signed with the shared key
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | tee certs.txt
+          # A silent fallback to the auto-generated debug key would still produce
+          # a valid APK, but it would not install as an update over previous
+          # builds. That key is always CN=Android Debug, so treat it as a failure.
+          if grep -q "CN=Android Debug" certs.txt; then
+            echo "APK was signed with the throwaway debug key, not the shared key" >&2
+            exit 1
+          fi
+
+      - name: Remove signing key from workspace
+        if: always()
+        run: rm -f signing/swinglines.keystore
 
       - name: Rename APK
         run: |
