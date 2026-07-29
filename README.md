@@ -1,4 +1,4 @@
-# SwingLines (Android)
+# SeePath (Android)
 
 Golf swing camera with persistent overlay lines.
 

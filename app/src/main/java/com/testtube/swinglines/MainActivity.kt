@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) maybeOpenCamera()
-            else Toast.makeText(this, "SwingLines needs the camera to work", Toast.LENGTH_LONG).show()
+            else Toast.makeText(this, "SeePath needs the camera to work", Toast.LENGTH_LONG).show()
         }
 
     /* ================================================================
@@ -367,7 +367,7 @@ class MainActivity : ComponentActivity() {
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SwingLines")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SeePath")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
@@ -702,12 +702,13 @@ class MainActivity : ComponentActivity() {
 
     /* ---------------- feature visibility settings ---------------- */
 
+    // Speed is deliberately NOT hideable: hiding it while a slo-mo mode is
+    // active would lock the user into that frame rate with no way back.
     private val featureDefs = listOf(
         Triple("feat.draw", "Freehand pen", R.id.btnDraw),
         Triple("feat.circle", "Circle tool", R.id.btnCircle),
         Triple("feat.grid", "Grid button", R.id.btnGrid),
         Triple("feat.flip", "Flip camera button", R.id.btnFlip),
-        Triple("feat.speed", "Speed button", R.id.btnSpeed),
         Triple("feat.caps", "Camera info button", R.id.btnCaps)
     )
 

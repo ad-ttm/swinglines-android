@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">SwingLines</string>
+    <string name="app_name">SeePath</string>
     <string name="flip">⟳ Flip</string>
     <string name="caps">Camera info</string>
     <string name="setups">☰ Setups</string>

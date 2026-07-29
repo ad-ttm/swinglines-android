@@ -1,4 +1,4 @@
-name: Build SwingLines APK
+name: Build SeePath APK
 
 on:
   push:
@@ -64,18 +64,18 @@ jobs:
       - name: Rename APK
         run: |
           VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
-          cp app/build/outputs/apk/debug/app-debug.apk SwingLines-v${VERSION}-build${{ github.run_number }}.apk
+          cp app/build/outputs/apk/debug/app-debug.apk SeePath-v${VERSION}-build${{ github.run_number }}.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SwingLines-APK
-          path: SwingLines-*.apk
+          name: SeePath-APK
+          path: SeePath-*.apk
 
       - name: Publish release (phone-friendly download link)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: SwingLines build ${{ github.run_number }}
+          name: SeePath build ${{ github.run_number }}
           body: "Debug APK - install directly on Android (allow 'unknown sources' when prompted)."
-          files: SwingLines-*.apk
+          files: SeePath-*.apk

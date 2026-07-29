@@ -11,8 +11,8 @@ android {
         applicationId = "com.testtube.swinglines"
         minSdk = 29
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.3.1"
+        versionCode = 6
+        versionName = "0.4"
     }
 
     // Shared test-signing key so every CI build signs identically and installs
@@ -41,7 +41,7 @@ android {
             }
         }
     } else {
-        logger.lifecycle("SwingLines: shared signing key unavailable, using default debug signature")
+        logger.lifecycle("SeePath: shared signing key unavailable, using default debug signature")
     }
 
     buildTypes {
