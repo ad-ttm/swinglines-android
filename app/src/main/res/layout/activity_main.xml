@@ -59,6 +59,11 @@
             android:id="@+id/btnSetups"
             style="@style/Pill"
             android:text="@string/setups" />
+
+        <Button
+            android:id="@+id/btnSettings"
+            style="@style/Pill"
+            android:text="@string/settings" />
     </LinearLayout>
 
     <LinearLayout
@@ -85,18 +90,28 @@
             <Button android:id="@+id/btnDraw" style="@style/Tool" android:text="@string/draw" />
             <Button android:id="@+id/btnCircle" style="@style/Tool" android:text="@string/circle" />
             <Button android:id="@+id/btnGrid" style="@style/Tool" android:text="@string/grid" />
-            <Button android:id="@+id/btnUndo" style="@style/Tool" android:text="@string/undo" />
-            <Button android:id="@+id/btnClear" style="@style/Tool" android:text="@string/clear" />
         </LinearLayout>
 
-        <ImageButton
-            android:id="@+id/btnRecord"
-            android:layout_width="72dp"
-            android:layout_height="72dp"
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="6dp"
-            android:background="@drawable/rec_button"
-            android:contentDescription="@string/record" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btnUndo" style="@style/Tool" android:text="@string/undo" />
+
+            <ImageButton
+                android:id="@+id/btnRecord"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:layout_marginHorizontal="16dp"
+                android:background="@drawable/rec_button"
+                android:contentDescription="@string/record" />
+
+            <Button android:id="@+id/btnClear" style="@style/Tool" android:text="@string/clear" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- ============ instant replay panel ============ -->

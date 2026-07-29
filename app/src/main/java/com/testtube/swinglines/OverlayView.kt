@@ -17,6 +17,14 @@ import kotlin.math.hypot
  * Transparent drawing layer over the camera preview.
  * Shapes are stored in NORMALISED coordinates (0..1) so they survive
  * rotation, resize and can be saved/loaded as setups.
+ *
+ * Editing model:
+ *  - drag a white endpoint dot to reshape a line / resize a circle
+ *  - drag anywhere along a shape's body to move the WHOLE shape
+ *  - touch empty space to draw a new shape with the current tool
+ *
+ * All sizes are density-scaled (dp), never raw pixels - raw px made the
+ * handles nearly untouchable on high-density phones.
  */
 class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs) {
 
@@ -29,25 +37,41 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
     val shapes = mutableListOf<Shape>()
     private var drawing: Shape? = null
+
+    // dragging state: dragIdx >= 0 moves one point, WHOLE_SHAPE moves everything
     private var dragShape: Shape? = null
     private var dragIdx: Int = 0
+    private var lastNx = 0f
+    private var lastNy = 0f
 
     var onShapesChanged: (() -> Unit)? = null
 
+    private val density = resources.displayMetrics.density
+    private fun dp(v: Float): Float = v * density
+
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 8f
+        strokeWidth = dp(3.5f)
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.argb(220, 255, 255, 255)
+        color = Color.argb(230, 255, 255, 255)
+    }
+    private val handleRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.5f)
+        color = Color.argb(160, 0, 0, 0)
     }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = dp(1f)
         color = Color.argb(110, 255, 255, 255)
+    }
+
+    companion object {
+        private const val WHOLE_SHAPE = -1
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -73,7 +97,7 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                         val cx = s.pts[0].x * w
                         val cy = s.pts[0].y * h
                         val r = hypot((s.pts[1].x - s.pts[0].x) * w, (s.pts[1].y - s.pts[0].y) * h)
-                        if (r > 2f) canvas.drawCircle(cx, cy, r, strokePaint)
+                        if (r > dp(2f)) canvas.drawCircle(cx, cy, r, strokePaint)
                     }
                 }
                 else -> {
@@ -87,13 +111,43 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             }
         }
         // endpoint handles for editable shapes
+        val hr = dp(6f)
         for (s in shapes) {
             if (s.type != "line" && s.type != "circle") continue
             for ((i, p) in s.pts.withIndex()) {
                 if (s.type == "circle" && i > 0) continue
-                canvas.drawCircle(p.x * w, p.y * h, 12f, handlePaint)
+                canvas.drawCircle(p.x * w, p.y * h, hr, handlePaint)
+                canvas.drawCircle(p.x * w, p.y * h, hr, handleRingPaint)
             }
         }
+    }
+
+    /** Distance from point to a segment, in pixels. */
+    private fun distToSegment(px: Float, py: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 <= 0f) 0f else (((px - x1) * dx + (py - y1) * dy) / len2).coerceIn(0f, 1f)
+        return hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+    }
+
+    /** Is this touch (pixels) on the shape's body? */
+    private fun hitsBody(s: Shape, px: Float, py: Float, w: Float, h: Float, tol: Float): Boolean {
+        if (s.type == "circle" && s.pts.size == 2) {
+            val cx = s.pts[0].x * w
+            val cy = s.pts[0].y * h
+            val r = hypot((s.pts[1].x - s.pts[0].x) * w, (s.pts[1].y - s.pts[0].y) * h)
+            return abs(hypot(px - cx, py - cy) - r) <= tol
+        }
+        for (i in 1 until s.pts.size) {
+            if (distToSegment(
+                    px, py,
+                    s.pts[i - 1].x * w, s.pts[i - 1].y * h,
+                    s.pts[i].x * w, s.pts[i].y * h
+                ) <= tol
+            ) return true
+        }
+        return false
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -102,20 +156,37 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
         if (w <= 0f || h <= 0f) return false
         val nx = (event.x / w).coerceIn(0f, 1f)
         val ny = (event.y / h).coerceIn(0f, 1f)
+        val px = event.x
+        val py = event.y
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                // grab an existing handle first (48px touch target)
+                val grabR = dp(26f)      // endpoint grab radius - a proper fingertip target
+                val bodyTol = dp(18f)    // how close to the shape body counts as grabbing it
+                // 1) endpoint handles first (reshape / resize)
                 for (s in shapes.reversed()) {
                     if (s.type != "line" && s.type != "circle") continue
                     for ((i, p) in s.pts.withIndex()) {
-                        if (hypot((p.x - nx) * w, (p.y - ny) * h) <= 48f) {
+                        if (hypot(p.x * w - px, p.y * h - py) <= grabR) {
                             dragShape = s
                             dragIdx = i
+                            lastNx = nx
+                            lastNy = ny
                             return true
                         }
                     }
                 }
+                // 2) shape body - move the whole shape
+                for (s in shapes.reversed()) {
+                    if (hitsBody(s, px, py, w, h, bodyTol)) {
+                        dragShape = s
+                        dragIdx = WHOLE_SHAPE
+                        lastNx = nx
+                        lastNy = ny
+                        return true
+                    }
+                }
+                // 3) empty space - start a new shape
                 drawing = if (tool == "line" || tool == "circle") {
                     Shape(tool, drawColor, mutableListOf(PointF(nx, ny), PointF(nx, ny)))
                 } else {
@@ -127,14 +198,17 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             MotionEvent.ACTION_MOVE -> {
                 val ds = dragShape
                 if (ds != null) {
-                    if (ds.type == "circle" && dragIdx == 0) {
-                        val dx = ds.pts[1].x - ds.pts[0].x
-                        val dy = ds.pts[1].y - ds.pts[0].y
-                        ds.pts[0] = PointF(nx, ny)
-                        ds.pts[1] = PointF(nx + dx, ny + dy)
+                    if (dragIdx == WHOLE_SHAPE || (ds.type == "circle" && dragIdx == 0)) {
+                        val dx = nx - lastNx
+                        val dy = ny - lastNy
+                        for (i in ds.pts.indices) {
+                            ds.pts[i] = PointF(ds.pts[i].x + dx, ds.pts[i].y + dy)
+                        }
                     } else {
                         ds.pts[dragIdx] = PointF(nx, ny)
                     }
+                    lastNx = nx
+                    lastNy = ny
                     invalidate()
                     return true
                 }
@@ -158,7 +232,7 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 drawing = null
                 val first = d.pts.first()
                 val last = d.pts.last()
-                val moved = hypot((first.x - last.x) * w, (first.y - last.y) * h) > 12f
+                val moved = hypot((first.x - last.x) * w, (first.y - last.y) * h) > dp(8f)
                 val keep = if (d.type == "draw") d.pts.size > 2 else moved
                 if (keep) shapes.add(d)
                 onShapesChanged?.invoke()

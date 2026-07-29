@@ -694,8 +694,41 @@ class MainActivity : ComponentActivity() {
         findViewById<Button>(R.id.btnFlip).setOnClickListener { flipCamera() }
         findViewById<Button>(R.id.btnCaps).setOnClickListener { showCapabilities() }
         findViewById<Button>(R.id.btnSetups).setOnClickListener { showSetups() }
+        findViewById<Button>(R.id.btnSettings).setOnClickListener { showFeatureSettings() }
         btnRecord.setOnClickListener { toggleRecording() }
         btnSpeed.setOnClickListener { cycleSpeed() }
+        applyFeaturePrefs()
+    }
+
+    /* ---------------- feature visibility settings ---------------- */
+
+    private val featureDefs = listOf(
+        Triple("feat.draw", "Freehand pen", R.id.btnDraw),
+        Triple("feat.circle", "Circle tool", R.id.btnCircle),
+        Triple("feat.grid", "Grid button", R.id.btnGrid),
+        Triple("feat.flip", "Flip camera button", R.id.btnFlip),
+        Triple("feat.speed", "Speed button", R.id.btnSpeed),
+        Triple("feat.caps", "Camera info button", R.id.btnCaps)
+    )
+
+    private fun applyFeaturePrefs() {
+        for ((key, _, viewId) in featureDefs) {
+            findViewById<View>(viewId).visibility =
+                if (prefs.getBoolean(key, true)) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun showFeatureSettings() {
+        val labels = featureDefs.map { it.second }.toTypedArray()
+        val checked = featureDefs.map { prefs.getBoolean(it.first, true) }.toBooleanArray()
+        AlertDialog.Builder(this)
+            .setTitle("Features on screen")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                prefs.edit().putBoolean(featureDefs[which].first, isChecked).apply()
+                applyFeaturePrefs()
+            }
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     private fun cycleSpeed() {
