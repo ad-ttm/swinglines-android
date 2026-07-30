@@ -107,6 +107,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var reviewFps = 30
     private var reviewSpeed = 0.25f
     private var reviewPosMs = 0.0
+    // dimensions of the recorded frame as displayed (after rotation), used to
+    // re-map live-view lines onto the letterboxed replay
+    private var recordedFrameW = 1080f
+    private var recordedFrameH = 1920f
     private val seekPoll = object : Runnable {
         override fun run() {
             val p = player
@@ -443,6 +447,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val hint = if (facingFront) (sensorOrientation + deg) % 360
             else (sensorOrientation - deg + 360) % 360
             rec.setOrientationHint(hint)
+            val rotated = hint % 180 != 0
+            recordedFrameW = if (rotated) mode.size.height.toFloat() else mode.size.width.toFloat()
+            recordedFrameH = if (rotated) mode.size.width.toFloat() else mode.size.height.toFloat()
             rec.prepare()
             mediaRecorder = rec
             recorderSurface = rec.surface
@@ -614,6 +621,43 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         })
     }
 
+    /**
+     * Carry the live-view lines onto the replay. The live view shows a
+     * centre-cropped ("cover") camera image while the replay shows the full
+     * recorded frame letterboxed ("fit"), so each point is mapped
+     * screen -> recorded frame -> replay view, keeping every line pinned to
+     * the same ball/body position in both views.
+     */
+    private fun copyLinesToReview() {
+        val vw = overlay.width.toFloat()
+        val vh = overlay.height.toFloat()
+        val rw = recordedFrameW
+        val rh = recordedFrameH
+        if (vw <= 0f || vh <= 0f || rw <= 0f || rh <= 0f) return
+        // live view: which part of the frame was visible (cover crop)
+        val scaleC = max(vw / rw, vh / rh)
+        val fw = vw / (scaleC * rw)
+        val fh = vh / (scaleC * rh)
+        val ox = (1f - fw) / 2f
+        val oy = (1f - fh) / 2f
+        // replay: where the frame sits on screen (fit / letterbox)
+        val scaleF = kotlin.math.min(vw / rw, vh / rh)
+        val dw = rw * scaleF / vw
+        val dh = rh * scaleF / vh
+        val dx = (1f - dw) / 2f
+        val dy = (1f - dh) / 2f
+        reviewOverlay.shapes.clear()
+        for (s in overlay.shapes) {
+            val pts = s.pts.map { p ->
+                val vx = ox + p.x * fw
+                val vy = oy + p.y * fh
+                android.graphics.PointF(dx + vx * dw, dy + vy * dh)
+            }.toMutableList()
+            reviewOverlay.shapes.add(OverlayView.Shape(s.type, s.color, pts))
+        }
+        reviewOverlay.invalidate()
+    }
+
     private fun openReview(uri: Uri, fps: Int) {
         reviewUri = uri
         reviewFps = fps
@@ -622,6 +666,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         fpsBadge.text = "${fps}fps"
         reviewPanel.visibility = View.VISIBLE
         revMenu.visibility = View.GONE
+        copyLinesToReview()
         val p = ensurePlayer()
         p.setMediaItem(MediaItem.fromUri(uri))
         p.prepare()
