@@ -423,7 +423,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/SeePath")
+                put(MediaStore.Video.Media.RELATIVE_PATH, recordFolder())
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
@@ -733,6 +733,99 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     /* ================================================================
+       students (tier 1: per-student folders on this phone)
+       ================================================================ */
+
+    private var activeStudent: String
+        get() = prefs.getString("activeStudent", "") ?: ""
+        set(value) { prefs.edit().putString("activeStudent", value).apply() }
+
+    private fun studentList(): MutableList<String> {
+        return try {
+            val arr = org.json.JSONArray(prefs.getString("students", "[]") ?: "[]")
+            MutableList(arr.length()) { arr.getString(it) }
+        } catch (_: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun saveStudentList(list: List<String>) {
+        prefs.edit().putString("students", org.json.JSONArray(list).toString()).apply()
+    }
+
+    private fun updateStudentButton() {
+        val s = activeStudent
+        findViewById<Button>(R.id.btnStudent).text = if (s.isEmpty()) "👤 Student" else "👤 $s"
+    }
+
+    private fun recordFolder(): String {
+        val s = activeStudent
+        return if (s.isEmpty()) "Movies/SeePath" else "Movies/SeePath/$s"
+    }
+
+    private fun showStudentPicker() {
+        val students = studentList().sorted()
+        val items = mutableListOf<String>()
+        items.add("✕ No student (general)")
+        items.addAll(students)
+        items.add("➕ Add new student")
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Whose swings are these?")
+            .setItems(items.toTypedArray()) { _, which ->
+                when {
+                    which == 0 -> { activeStudent = ""; updateStudentButton(); Toast.makeText(this, "Recording to the general folder", Toast.LENGTH_SHORT).show() }
+                    which == items.size - 1 -> promptAddStudent()
+                    else -> {
+                        activeStudent = items[which]
+                        updateStudentButton()
+                        Toast.makeText(this, "Recording to ${items[which]}'s folder", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton("Close", null)
+        if (students.isNotEmpty()) {
+            builder.setNeutralButton("Remove…") { _, _ -> promptRemoveStudent(students) }
+        }
+        builder.show()
+    }
+
+    private fun promptAddStudent() {
+        val input = EditText(this)
+        input.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+        input.hint = "Student's name"
+        AlertDialog.Builder(this)
+            .setTitle("Add student")
+            .setView(input)
+            .setPositiveButton("Add") { _, _ ->
+                val name = input.text.toString()
+                    .replace(Regex("[^A-Za-z0-9 _-]"), "").trim().take(30)
+                if (name.isNotEmpty()) {
+                    val list = studentList()
+                    if (!list.contains(name)) { list.add(name); saveStudentList(list) }
+                    activeStudent = name
+                    updateStudentButton()
+                    Toast.makeText(this, "Recording to $name's folder", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptRemoveStudent(students: List<String>) {
+        AlertDialog.Builder(this)
+            .setTitle("Remove which student?")
+            .setItems(students.toTypedArray()) { _, which ->
+                val list = studentList()
+                list.remove(students[which])
+                saveStudentList(list)
+                if (activeStudent == students[which]) { activeStudent = ""; updateStudentButton() }
+                Toast.makeText(this, "Removed (their saved clips stay on the phone)", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /* ================================================================
        clips library + import
        ================================================================ */
 
@@ -776,45 +869,67 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         openReview(uri, fps)
     }
 
+    private var clipsShowAll = false
+
     private fun showClips() {
+        val student = activeStudent
+        val filtering = student.isNotEmpty() && !clipsShowAll
         val rows = mutableListOf<Pair<String, Uri?>>()
         rows.add("➕ Import a video from your phone" to null)
+        if (student.isNotEmpty()) {
+            rows.add((if (filtering) "👤 Showing $student only - tap for everyone" else "👤 Showing everyone - tap for $student only") to null)
+        }
         try {
             val proj = arrayOf(
                 MediaStore.Video.Media._ID,
-                MediaStore.Video.Media.DISPLAY_NAME
+                MediaStore.Video.Media.DISPLAY_NAME,
+                MediaStore.Video.Media.RELATIVE_PATH
             )
-            val sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? OR ${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+            val sel: String
+            val selArgs: Array<String>
+            if (filtering) {
+                sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+                // trailing slash matters: without it "Sam" also matches "Sammy"
+                selArgs = arrayOf("Movies/SeePath/$student/%")
+            } else {
+                sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? OR ${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+                selArgs = arrayOf("Movies/SeePath%", "Movies/SwingLines%")
+            }
             contentResolver.query(
                 MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                proj, sel,
-                arrayOf("Movies/SeePath%", "Movies/SwingLines%"),
+                proj, sel, selArgs,
                 "${MediaStore.Video.Media.DATE_ADDED} DESC"
             )?.use { c ->
                 val idI = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                 val nameI = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                while (c.moveToNext() && rows.size <= 60) {
+                val pathI = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            while (c.moveToNext() && rows.size <= 62) {
                     val uri = android.content.ContentUris.withAppendedId(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(idI)
                     )
-                    rows.add((c.getString(nameI) ?: "swing") to uri)
+                    val name = c.getString(nameI) ?: "swing"
+                    val path = c.getString(pathI) ?: ""
+                    // label clips with their student subfolder, e.g. "Dave / swing-...."
+                    val sub = path.removePrefix("Movies/SeePath/").removeSuffix("/")
+                    val label = if (!filtering && sub.isNotEmpty() && !sub.startsWith("Movies")) "$sub / $name" else name
+                    rows.add(label to uri)
                 }
             }
         } catch (_: Exception) {
         }
         val labels = rows.map { it.first }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Swing clips")
+            .setTitle(if (filtering) "$student's swings" else "Swing clips")
             .setItems(labels) { _, which ->
                 val (name, uri) = rows[which]
-                if (uri == null) {
-                    importLauncher.launch(
+                when {
+                    uri == null && which == 0 -> importLauncher.launch(
                         androidx.activity.result.PickVisualMediaRequest(
                             ActivityResultContracts.PickVisualMedia.VideoOnly
                         )
                     )
-                } else {
-                    clipActions(name, uri)
+                    uri == null -> { clipsShowAll = !clipsShowAll; showClips() }
+                    else -> clipActions(name, uri)
                 }
             }
             .setNegativeButton("Close", null)
@@ -906,6 +1021,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnSetups).setOnClickListener { showSetups() }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showFeatureSettings() }
         findViewById<Button>(R.id.btnClips).setOnClickListener { showClips() }
+        findViewById<Button>(R.id.btnStudent).setOnClickListener { showStudentPicker() }
+        updateStudentButton()
         btnRecord.setOnClickListener { toggleRecording() }
         btnSpeed.setOnClickListener { cycleSpeed() }
         applyFeaturePrefs()
@@ -922,7 +1039,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.flip", "Flip camera button", R.id.btnFlip),
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
         Triple("feat.level", "Spirit level", R.id.levelView),
-        Triple("feat.clips", "Clips button", R.id.btnClips)
+        Triple("feat.clips", "Clips button", R.id.btnClips),
+        Triple("feat.student", "Student folders", R.id.btnStudent)
     )
 
     private fun applyFeaturePrefs() {

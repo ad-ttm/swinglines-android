@@ -102,6 +102,7 @@
 
             <Button android:id="@+id/btnUndo" style="@style/Tool" android:text="@string/undo" />
             <Button android:id="@+id/btnClear" style="@style/Tool" android:text="@string/clear" />
+            <Button android:id="@+id/btnStudent" style="@style/Tool" android:text="@string/student" />
             <Button android:id="@+id/btnCaps" style="@style/Tool" android:text="@string/caps" />
         </LinearLayout>
     </LinearLayout>
