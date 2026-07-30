@@ -151,6 +151,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             else Toast.makeText(this, "SeePath needs the camera to work", Toast.LENGTH_LONG).show()
         }
 
+    private val importLauncher =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            if (uri != null) openClip(uri)
+        }
+
     /* ================================================================
        lifecycle
        ================================================================ */
@@ -711,6 +716,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun shareCurrent() {
         val uri = reviewUri ?: return
+        shareUri(uri)
+    }
+
+    private fun shareUri(uri: Uri) {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "video/mp4"
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -720,6 +729,120 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             startActivity(Intent.createChooser(intent, "Share swing"))
         } catch (e: Exception) {
             Toast.makeText(this, "Couldn't open share sheet: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /* ================================================================
+       clips library + import
+       ================================================================ */
+
+    /** Open any clip (ours or imported): read fps/size/rotation from the file
+     *  so frame stepping and line mapping stay correct. */
+    private fun openClip(uri: Uri) {
+        var fps = 30
+        var w = 1080f
+        var h = 1920f
+        try {
+            val mmr = android.media.MediaMetadataRetriever()
+            mmr.setDataSource(this, uri)
+            val vw = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toFloatOrNull() ?: 1080f
+            val vh = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toFloatOrNull() ?: 1920f
+            val rot = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            val cap = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull()
+            mmr.release()
+            if (rot % 180 != 0) { w = vh; h = vw } else { w = vw; h = vh }
+            if (cap != null && cap > 12f) {
+                fps = cap.roundToInt()
+            } else {
+                val ex = android.media.MediaExtractor()
+                ex.setDataSource(this, uri, null)
+                for (i in 0 until ex.trackCount) {
+                    val f = ex.getTrackFormat(i)
+                    val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("video/")) {
+                        if (f.containsKey(android.media.MediaFormat.KEY_FRAME_RATE)) {
+                            fps = f.getInteger(android.media.MediaFormat.KEY_FRAME_RATE)
+                        }
+                        break
+                    }
+                }
+                ex.release()
+            }
+        } catch (_: Exception) {
+        }
+        fps = fps.coerceIn(12, 300)
+        recordedFrameW = w
+        recordedFrameH = h
+        openReview(uri, fps)
+    }
+
+    private fun showClips() {
+        val rows = mutableListOf<Pair<String, Uri?>>()
+        rows.add("➕ Import a video from your phone" to null)
+        try {
+            val proj = arrayOf(
+                MediaStore.Video.Media._ID,
+                MediaStore.Video.Media.DISPLAY_NAME
+            )
+            val sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? OR ${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
+            contentResolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                proj, sel,
+                arrayOf("Movies/SeePath%", "Movies/SwingLines%"),
+                "${MediaStore.Video.Media.DATE_ADDED} DESC"
+            )?.use { c ->
+                val idI = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+                val nameI = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                while (c.moveToNext() && rows.size <= 60) {
+                    val uri = android.content.ContentUris.withAppendedId(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(idI)
+                    )
+                    rows.add((c.getString(nameI) ?: "swing") to uri)
+                }
+            }
+        } catch (_: Exception) {
+        }
+        val labels = rows.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Swing clips")
+            .setItems(labels) { _, which ->
+                val (name, uri) = rows[which]
+                if (uri == null) {
+                    importLauncher.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.VideoOnly
+                        )
+                    )
+                } else {
+                    clipActions(name, uri)
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun clipActions(name: String, uri: Uri) {
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(arrayOf("View", "Share", "Delete")) { _, which ->
+                when (which) {
+                    0 -> openClip(uri)
+                    1 -> shareUri(uri)
+                    2 -> deleteClip(uri)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteClip(uri: Uri) {
+        try {
+            contentResolver.delete(uri, null, null)
+            Toast.makeText(this, "Deleted", Toast.LENGTH_SHORT).show()
+        } catch (_: SecurityException) {
+            Toast.makeText(this, "Android protects this one - delete it from your gallery app", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Couldn't delete: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -782,6 +905,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnCaps).setOnClickListener { showCapabilities() }
         findViewById<Button>(R.id.btnSetups).setOnClickListener { showSetups() }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showFeatureSettings() }
+        findViewById<Button>(R.id.btnClips).setOnClickListener { showClips() }
         btnRecord.setOnClickListener { toggleRecording() }
         btnSpeed.setOnClickListener { cycleSpeed() }
         applyFeaturePrefs()
@@ -797,7 +921,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.grid", "Grid button", R.id.btnGrid),
         Triple("feat.flip", "Flip camera button", R.id.btnFlip),
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
-        Triple("feat.level", "Spirit level", R.id.levelView)
+        Triple("feat.level", "Spirit level", R.id.levelView),
+        Triple("feat.clips", "Clips button", R.id.btnClips)
     )
 
     private fun applyFeaturePrefs() {
