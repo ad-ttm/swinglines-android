@@ -8,6 +8,12 @@
     <string name="menu">☰</string>
     <string name="clips">▶ Clips</string>
     <string name="student">👤 Student</string>
+    <string name="compare">⇅ Compare</string>
+    <string name="share_lines">↗ +Lines</string>
+    <string name="choose_swing">Choose swing</string>
+    <string name="play_icon">▶</string>
+    <string name="play_both">▶ Both</string>
+    <string name="pause_both">❚❚ Both</string>
     <string name="line">╱ Line</string>
     <string name="draw">✎ Draw</string>
     <string name="circle">◯ Circle</string>

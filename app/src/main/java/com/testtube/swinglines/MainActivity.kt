@@ -151,9 +151,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             else Toast.makeText(this, "SeePath needs the camera to work", Toast.LENGTH_LONG).show()
         }
 
+    private var pendingPick: ((Uri) -> Unit)? = null
+
     private val importLauncher =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) openClip(uri)
+            val cb = pendingPick
+            pendingPick = null
+            if (uri != null) {
+                if (cb != null) cb(uri) else openClip(uri)
+            }
         }
 
     /* ================================================================
@@ -183,6 +189,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         setupToolbar()
         setupReviewPanel()
+        setupCompare()
         restoreCurrentLines()
         overlay.onShapesChanged = { persistCurrentLines() }
 
@@ -218,6 +225,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     override fun onDestroy() {
         player?.release()
         player = null
+        paneA?.releaseAll()
+        paneB?.releaseAll()
         super.onDestroy()
     }
 
@@ -607,6 +616,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnRevUndo).setOnClickListener { reviewOverlay.undo() }
         findViewById<Button>(R.id.btnRevClear).setOnClickListener { reviewOverlay.clearAll() }
         findViewById<Button>(R.id.btnShare).setOnClickListener { shareCurrent() }
+        findViewById<Button>(R.id.btnShareLines).setOnClickListener { shareWithLines() }
 
         reviewSeek.max = 1000
         reviewSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -871,14 +881,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private var clipsShowAll = false
 
-    private fun showClips() {
-        val student = activeStudent
-        val filtering = student.isNotEmpty() && !clipsShowAll
-        val rows = mutableListOf<Pair<String, Uri?>>()
-        rows.add("➕ Import a video from your phone" to null)
-        if (student.isNotEmpty()) {
-            rows.add((if (filtering) "👤 Showing $student only - tap for everyone" else "👤 Showing everyone - tap for $student only") to null)
-        }
+    /** Query recorded clips as (label, uri), newest first, optionally filtered to one student. */
+    private fun queryClips(filterStudent: String?): List<Pair<String, Uri>> {
+        val out = mutableListOf<Pair<String, Uri>>()
         try {
             val proj = arrayOf(
                 MediaStore.Video.Media._ID,
@@ -887,10 +892,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             )
             val sel: String
             val selArgs: Array<String>
-            if (filtering) {
+            if (filterStudent != null) {
                 sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
                 // trailing slash matters: without it "Sam" also matches "Sammy"
-                selArgs = arrayOf("Movies/SeePath/$student/%")
+                selArgs = arrayOf("Movies/SeePath/$filterStudent/%")
             } else {
                 sel = "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? OR ${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?"
                 selArgs = arrayOf("Movies/SeePath%", "Movies/SwingLines%")
@@ -903,20 +908,31 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val idI = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                 val nameI = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
                 val pathI = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
-            while (c.moveToNext() && rows.size <= 62) {
+                while (c.moveToNext() && out.size <= 60) {
                     val uri = android.content.ContentUris.withAppendedId(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(idI)
                     )
                     val name = c.getString(nameI) ?: "swing"
                     val path = c.getString(pathI) ?: ""
-                    // label clips with their student subfolder, e.g. "Dave / swing-...."
                     val sub = path.removePrefix("Movies/SeePath/").removeSuffix("/")
-                    val label = if (!filtering && sub.isNotEmpty() && !sub.startsWith("Movies")) "$sub / $name" else name
-                    rows.add(label to uri)
+                    val label = if (filterStudent == null && sub.isNotEmpty() && !sub.startsWith("Movies")) "$sub / $name" else name
+                    out.add(label to uri)
                 }
             }
         } catch (_: Exception) {
         }
+        return out
+    }
+
+    private fun showClips() {
+        val student = activeStudent
+        val filtering = student.isNotEmpty() && !clipsShowAll
+        val rows = mutableListOf<Pair<String, Uri?>>()
+        rows.add("➕ Import a video from your phone" to null)
+        if (student.isNotEmpty()) {
+            rows.add((if (filtering) "👤 Showing $student only - tap for everyone" else "👤 Showing everyone - tap for $student only") to null)
+        }
+        for (r in queryClips(if (filtering) student else null)) rows.add(r.first to r.second)
         val labels = rows.map { it.first }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(if (filtering) "$student's swings" else "Swing clips")
@@ -959,6 +975,283 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         } catch (e: Exception) {
             Toast.makeText(this, "Couldn't delete: ${e.message}", Toast.LENGTH_LONG).show()
         }
+    }
+
+    /* ================================================================
+       share with lines burned in
+       ================================================================ */
+
+    private fun shareWithLines() {
+        val uri = reviewUri ?: return
+        if (reviewOverlay.shapes.isEmpty()) {
+            Toast.makeText(this, "No lines on this replay - draw some first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // convert panel-normalised shapes to frame-normalised (undo the letterbox)
+        val vw = overlay.width.toFloat()
+        val vh = overlay.height.toFloat()
+        val rw = recordedFrameW
+        val rh = recordedFrameH
+        if (vw <= 0f || vh <= 0f) return
+        val scaleF = kotlin.math.min(vw / rw, vh / rh)
+        val dw = rw * scaleF / vw
+        val dh = rh * scaleF / vh
+        val dx = (1f - dw) / 2f
+        val dy = (1f - dh) / 2f
+        val frameShapes = reviewOverlay.shapes.map { s ->
+            OverlayView.Shape(s.type, s.color, s.pts.map { p ->
+                android.graphics.PointF(
+                    ((p.x - dx) / dw).coerceIn(0f, 1f),
+                    ((p.y - dy) / dh).coerceIn(0f, 1f)
+                )
+            }.toMutableList())
+        }
+        player?.pause()
+        val msg = TextView(this).apply {
+            setPadding(48, 32, 48, 24)
+            text = "Rendering your lines into the video…"
+        }
+        var cancelled = false
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Preparing share")
+            .setView(msg)
+            .setNegativeButton("Cancel") { _, _ -> cancelled = true }
+            .setCancelable(false)
+            .show()
+        BurnExporter.export(this, uri, frameShapes, recordFolder(), object : BurnExporter.Listener {
+            override fun onProgress(pct: Int) {
+                runOnUiThread { msg.text = "Rendering your lines into the video… $pct%" }
+            }
+
+            override fun isCancelled(): Boolean = cancelled
+
+            override fun onDone(out: Uri?) {
+                runOnUiThread {
+                    try { dlg.dismiss() } catch (_: Exception) {}
+                    if (out != null) {
+                        Toast.makeText(this@MainActivity, "Saved with lines - sharing", Toast.LENGTH_SHORT).show()
+                        shareUri(out)
+                    } else if (!cancelled) {
+                        Toast.makeText(this@MainActivity, "Couldn't render that one - shared clips stay clean for now", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        })
+    }
+
+    /* ================================================================
+       split-screen compare
+       ================================================================ */
+
+    private inner class CmpPane(
+        val pv: PlayerView,
+        val choose: Button,
+        val pp: Button,
+        val seek: SeekBar,
+        back: Button,
+        fwd: Button
+    ) {
+        var player: ExoPlayer? = null
+        var fps = 30
+        var posMs = 0.0
+
+        init {
+            choose.setOnClickListener { pickClip { uri -> load(uri) } }
+            pp.setOnClickListener {
+                val p = player ?: return@setOnClickListener
+                if (p.isPlaying) { p.pause(); posMs = p.currentPosition.toDouble() }
+                else { if (p.playbackState == Player.STATE_ENDED) p.seekTo(0); p.play() }
+            }
+            back.setOnClickListener { step(-1) }
+            fwd.setOnClickListener { step(1) }
+            seek.max = 1000
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    val p = player ?: return
+                    if (p.isPlaying) p.pause()
+                    if (p.duration > 0) {
+                        posMs = p.duration.toDouble() * progress / 1000.0
+                        p.seekTo(posMs.roundToLong())
+                    }
+                }
+
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {}
+            })
+        }
+
+        fun ensure(): ExoPlayer {
+            player?.let { return it }
+            val p = ExoPlayer.Builder(this@MainActivity).build()
+            p.setSeekParameters(SeekParameters.EXACT)
+            p.addListener(object : Player.Listener {
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    pp.text = if (isPlaying) "❚❚" else "▶"
+                }
+            })
+            pv.player = p
+            player = p
+            return p
+        }
+
+        fun load(uri: Uri) {
+            fps = clipFps(uri)
+            posMs = 0.0
+            val p = ensure()
+            p.setMediaItem(MediaItem.fromUri(uri))
+            p.prepare()
+            p.setPlaybackSpeed(cmpSpeed)
+            p.playWhenReady = false
+            choose.visibility = View.GONE
+        }
+
+        fun step(dir: Int) {
+            val p = player ?: return
+            if (p.isPlaying) { p.pause(); posMs = p.currentPosition.toDouble() }
+            val frameMs = 1000.0 / fps
+            val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
+            posMs = (posMs + dir * frameMs).coerceIn(0.0, dur)
+            p.seekTo(posMs.roundToLong())
+            if (p.duration > 0) {
+                seek.progress = (posMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
+            }
+        }
+
+        fun poll() {
+            val p = player ?: return
+            if (p.isPlaying) {
+                posMs = p.currentPosition.toDouble()
+                if (p.duration > 0) {
+                    seek.progress = (posMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
+                }
+            }
+        }
+
+        fun releaseAll() {
+            player?.release()
+            player = null
+            choose.visibility = View.VISIBLE
+        }
+    }
+
+    private var paneA: CmpPane? = null
+    private var paneB: CmpPane? = null
+    private var cmpSpeed = 1.0f
+    private lateinit var comparePanel: View
+    private val cmpPoll = object : Runnable {
+        override fun run() {
+            if (comparePanel.visibility == View.VISIBLE) {
+                paneA?.poll()
+                paneB?.poll()
+                mainHandler.postDelayed(this, 100)
+            }
+        }
+    }
+
+    private fun setupCompare() {
+        comparePanel = findViewById(R.id.comparePanel)
+        paneA = CmpPane(
+            findViewById(R.id.playerA), findViewById(R.id.chooseA),
+            findViewById(R.id.ppA), findViewById(R.id.seekA),
+            findViewById(R.id.backA), findViewById(R.id.fwdA)
+        )
+        paneB = CmpPane(
+            findViewById(R.id.playerB), findViewById(R.id.chooseB),
+            findViewById(R.id.ppB), findViewById(R.id.seekB),
+            findViewById(R.id.backB), findViewById(R.id.fwdB)
+        )
+        findViewById<Button>(R.id.cmpPlayBoth).setOnClickListener {
+            paneA?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
+            paneB?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
+        }
+        findViewById<Button>(R.id.cmpPauseBoth).setOnClickListener {
+            paneA?.player?.pause()
+            paneB?.player?.pause()
+        }
+        findViewById<Button>(R.id.cmpQuarter).setOnClickListener { setCmpSpeed(0.25f) }
+        findViewById<Button>(R.id.cmpFull).setOnClickListener { setCmpSpeed(1.0f) }
+        findViewById<Button>(R.id.cmpClose).setOnClickListener { closeCompare() }
+        findViewById<Button>(R.id.btnCompare).setOnClickListener { openCompare() }
+    }
+
+    private fun setCmpSpeed(s: Float) {
+        cmpSpeed = s
+        paneA?.player?.setPlaybackSpeed(s)
+        paneB?.player?.setPlaybackSpeed(s)
+    }
+
+    private fun openCompare() {
+        if (recording) {
+            Toast.makeText(this, "Stop recording first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        liveMenu.visibility = View.GONE
+        comparePanel.visibility = View.VISIBLE
+        mainHandler.removeCallbacks(cmpPoll)
+        mainHandler.post(cmpPoll)
+    }
+
+    private fun closeCompare() {
+        mainHandler.removeCallbacks(cmpPoll)
+        paneA?.releaseAll()
+        paneB?.releaseAll()
+        comparePanel.visibility = View.GONE
+    }
+
+    /** Frame rate of an arbitrary clip, for true frame stepping. */
+    private fun clipFps(uri: Uri): Int {
+        var fps = 30
+        try {
+            val mmr = android.media.MediaMetadataRetriever()
+            mmr.setDataSource(this, uri)
+            val cap = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull()
+            mmr.release()
+            if (cap != null && cap > 12f) {
+                fps = cap.roundToInt()
+            } else {
+                val ex = android.media.MediaExtractor()
+                ex.setDataSource(this, uri, null)
+                for (i in 0 until ex.trackCount) {
+                    val f = ex.getTrackFormat(i)
+                    val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("video/")) {
+                        if (f.containsKey(android.media.MediaFormat.KEY_FRAME_RATE)) {
+                            fps = f.getInteger(android.media.MediaFormat.KEY_FRAME_RATE)
+                        }
+                        break
+                    }
+                }
+                ex.release()
+            }
+        } catch (_: Exception) {
+        }
+        return fps.coerceIn(12, 300)
+    }
+
+    /** Clip picker used by compare panes: session clips plus phone import. */
+    private fun pickClip(cb: (Uri) -> Unit) {
+        val rows = mutableListOf<Pair<String, Uri?>>()
+        rows.add("➕ From your phone (camera roll)" to null)
+        rows.addAll(queryClips(null))
+        val labels = rows.map { it.first }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Choose a swing")
+            .setItems(labels) { _, which ->
+                val (_, uri) = rows[which]
+                if (uri == null) {
+                    pendingPick = cb
+                    importLauncher.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.VideoOnly
+                        )
+                    )
+                } else {
+                    cb(uri)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /* ================================================================
@@ -1040,7 +1333,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
         Triple("feat.level", "Spirit level", R.id.levelView),
         Triple("feat.clips", "Clips button", R.id.btnClips),
-        Triple("feat.student", "Student folders", R.id.btnStudent)
+        Triple("feat.student", "Student folders", R.id.btnStudent),
+        Triple("feat.compare", "Compare (split screen)", R.id.btnCompare)
     )
 
     private fun applyFeaturePrefs() {
