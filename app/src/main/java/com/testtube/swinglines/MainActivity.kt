@@ -11,6 +11,10 @@ import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
@@ -18,7 +22,6 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
-import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Bundle
@@ -39,18 +42,26 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.ui.PlayerView
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
-class MainActivity : ComponentActivity() {
+@androidx.annotation.OptIn(UnstableApi::class)
+class MainActivity : ComponentActivity(), SensorEventListener {
 
     /* ---------- views ---------- */
     private lateinit var previewTexture: TextureView
@@ -58,8 +69,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var recIndicator: TextView
     private lateinit var btnRecord: ImageButton
     private lateinit var btnSpeed: Button
+    private lateinit var liveMenu: View
+    private lateinit var levelView: LevelView
     private lateinit var reviewPanel: View
-    private lateinit var reviewVideo: VideoView
+    private lateinit var revMenu: View
+    private lateinit var playerView: PlayerView
     private lateinit var reviewOverlay: OverlayView
     private lateinit var reviewSeek: SeekBar
     private lateinit var fpsBadge: TextView
@@ -87,30 +101,33 @@ class MainActivity : ComponentActivity() {
     private var modes: List<SpeedMode> = listOf(SpeedMode("Std", 30, Size(1920, 1080), false))
     private var modeIndex = 0
 
-    /* ---------- review state ---------- */
-    private var reviewMp: MediaPlayer? = null
+    /* ---------- replay state (ExoPlayer: frame-exact seeking) ---------- */
+    private var player: ExoPlayer? = null
     private var reviewUri: Uri? = null
     private var reviewFps = 30
     private var reviewSpeed = 0.25f
     private var reviewPosMs = 0.0
     private val seekPoll = object : Runnable {
         override fun run() {
-            val mp = reviewMp
-            if (mp != null && reviewPanel.visibility == View.VISIBLE) {
-                try {
-                    if (mp.isPlaying) {
-                        reviewPosMs = mp.currentPosition.toDouble()
-                        if (mp.duration > 0) {
-                            reviewSeek.progress =
-                                (reviewPosMs / mp.duration * 1000).roundToInt().coerceIn(0, 1000)
-                        }
+            val p = player
+            if (p != null && reviewPanel.visibility == View.VISIBLE) {
+                if (p.isPlaying) {
+                    reviewPosMs = p.currentPosition.toDouble()
+                    val dur = p.duration
+                    if (dur > 0) {
+                        reviewSeek.progress =
+                            (reviewPosMs / dur * 1000).roundToInt().coerceIn(0, 1000)
                     }
-                } catch (_: Exception) {
                 }
                 mainHandler.postDelayed(this, 100)
             }
         }
     }
+
+    /* ---------- spirit level ---------- */
+    private var sensorManager: SensorManager? = null
+    private var gx = 0f
+    private var gy = 9.8f
 
     private val toolButtons = mutableMapOf<String, Button>()
     private val colors = intArrayOf(
@@ -143,12 +160,17 @@ class MainActivity : ComponentActivity() {
         recIndicator = findViewById(R.id.recIndicator)
         btnRecord = findViewById(R.id.btnRecord)
         btnSpeed = findViewById(R.id.btnSpeed)
+        liveMenu = findViewById(R.id.liveMenu)
+        levelView = findViewById(R.id.levelView)
         reviewPanel = findViewById(R.id.reviewPanel)
-        reviewVideo = findViewById(R.id.reviewVideo)
+        revMenu = findViewById(R.id.revMenu)
+        playerView = findViewById(R.id.playerView)
         reviewOverlay = findViewById(R.id.reviewOverlay)
         reviewSeek = findViewById(R.id.reviewSeek)
         fpsBadge = findViewById(R.id.fpsBadge)
         btnRevPlay = findViewById(R.id.btnRevPlay)
+
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
         setupToolbar()
         setupReviewPanel()
@@ -172,12 +194,22 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (previewTexture.isAvailable) maybeOpenCamera()
+        sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
     }
 
     override fun onPause() {
+        sensorManager?.unregisterListener(this)
         if (recording) stopRecording(openReplay = false)
         closeCamera()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        player?.release()
+        player = null
+        super.onDestroy()
     }
 
     private fun maybeOpenCamera() {
@@ -189,6 +221,23 @@ class MainActivity : ComponentActivity() {
         }
         if (cameraDevice == null && previewTexture.isAvailable) openCamera()
     }
+
+    /* ================================================================
+       spirit level
+       ================================================================ */
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        // low-pass filter so the bubble is steady, not jittery
+        gx = gx * 0.9f + event.values[0] * 0.1f
+        gy = gy * 0.9f + event.values[1] * 0.1f
+        var angle = Math.toDegrees(atan2(gx.toDouble(), gy.toDouble())).toFloat()
+        // fold to the nearest upright so portrait and landscape both read 0 when level
+        angle -= (Math.round(angle / 90f) * 90f)
+        if (levelView.visibility == View.VISIBLE) levelView.rollDegrees = angle
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     /* ================================================================
        camera open / preview
@@ -337,7 +386,6 @@ class MainActivity : ComponentActivity() {
             matrix.postScale(scale, scale, cx, cy)
             matrix.postRotate(90f * (rotation - 2), cx, cy)
         } else {
-            // portrait: content is displayed rotated (bufH x bufW) then stretched to the view
             val kx = vw / bufH
             val ky = vh / bufW
             val k = max(kx, ky)
@@ -362,7 +410,6 @@ class MainActivity : ComponentActivity() {
         }
         val mode = modes[modeIndex]
         try {
-            // output file via MediaStore (pending until finished)
             val name = "swing-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4"
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
@@ -453,7 +500,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Recording failed to start - clean up and delete the empty file. */
     private fun abortRecording() {
         try { mediaRecorder?.release() } catch (_: Exception) {}
         mediaRecorder = null
@@ -479,7 +525,7 @@ class MainActivity : ComponentActivity() {
         try {
             rec.stop()
         } catch (e: Exception) {
-            ok = false // stopped too quickly - nothing written
+            ok = false
         }
         try { rec.release() } catch (_: Exception) {}
         mediaRecorder = null
@@ -509,19 +555,37 @@ class MainActivity : ComponentActivity() {
     }
 
     /* ================================================================
-       instant replay
+       instant replay (ExoPlayer, frame-exact)
        ================================================================ */
 
+    private fun ensurePlayer(): ExoPlayer {
+        player?.let { return it }
+        val p = ExoPlayer.Builder(this).build()
+        p.setSeekParameters(SeekParameters.EXACT)
+        p.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                updatePlayLabel()
+            }
+        })
+        playerView.player = p
+        player = p
+        return p
+    }
+
     private fun setupReviewPanel() {
+        findViewById<Button>(R.id.btnRevMenu).setOnClickListener {
+            revMenu.visibility = if (revMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
         findViewById<Button>(R.id.btnRevClose).setOnClickListener { closeReview() }
         btnRevPlay.setOnClickListener {
-            val mp = reviewMp ?: return@setOnClickListener
-            try {
-                if (mp.isPlaying) mp.pause() else {
-                    applySpeed(mp, playing = true)
-                }
-                updatePlayLabel()
-            } catch (_: Exception) {}
+            val p = player ?: return@setOnClickListener
+            if (p.isPlaying) {
+                p.pause()
+                reviewPosMs = p.currentPosition.toDouble()
+            } else {
+                if (p.playbackState == Player.STATE_ENDED) p.seekTo(0)
+                p.play()
+            }
         }
         findViewById<Button>(R.id.btnRevBack).setOnClickListener { stepFrame(-1) }
         findViewById<Button>(R.id.btnRevFwd).setOnClickListener { stepFrame(1) }
@@ -536,93 +600,67 @@ class MainActivity : ComponentActivity() {
         reviewSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
-                val mp = reviewMp ?: return
-                try {
-                    if (mp.isPlaying) mp.pause()
-                    updatePlayLabel()
-                    if (mp.duration > 0) {
-                        reviewPosMs = mp.duration.toDouble() * progress / 1000.0
-                        mp.seekTo(reviewPosMs.toLong(), MediaPlayer.SEEK_CLOSEST)
-                    }
-                } catch (_: Exception) {}
+                val p = player ?: return
+                if (p.isPlaying) p.pause()
+                val dur = p.duration
+                if (dur > 0) {
+                    reviewPosMs = dur.toDouble() * progress / 1000.0
+                    p.seekTo(reviewPosMs.roundToLong())
+                }
             }
 
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
-
-        reviewVideo.setOnPreparedListener { mp ->
-            reviewMp = mp
-            mp.isLooping = false
-            reviewPosMs = 0.0
-            applySpeed(mp, playing = true)
-            updatePlayLabel()
-            mainHandler.removeCallbacks(seekPoll)
-            mainHandler.post(seekPoll)
-        }
-        reviewVideo.setOnCompletionListener { updatePlayLabel() }
-        reviewVideo.setOnErrorListener { _, what, extra ->
-            Toast.makeText(this, "Playback error ($what/$extra)", Toast.LENGTH_LONG).show()
-            true
-        }
     }
 
     private fun openReview(uri: Uri, fps: Int) {
         reviewUri = uri
         reviewFps = fps
         reviewSpeed = if (fps > 60) 0.25f else 1.0f
+        reviewPosMs = 0.0
         fpsBadge.text = "${fps}fps"
         reviewPanel.visibility = View.VISIBLE
-        reviewVideo.setVideoURI(uri)
+        revMenu.visibility = View.GONE
+        val p = ensurePlayer()
+        p.setMediaItem(MediaItem.fromUri(uri))
+        p.prepare()
+        p.setPlaybackSpeed(reviewSpeed)
+        p.playWhenReady = true
+        mainHandler.removeCallbacks(seekPoll)
+        mainHandler.post(seekPoll)
     }
 
     private fun closeReview() {
         mainHandler.removeCallbacks(seekPoll)
-        try { reviewVideo.stopPlayback() } catch (_: Exception) {}
-        reviewMp = null
+        player?.pause()
+        player?.clearMediaItems()
         reviewUri = null
         reviewPanel.visibility = View.GONE
     }
 
     private fun setSpeed(s: Float) {
         reviewSpeed = s
-        val mp = reviewMp ?: return
-        try {
-            if (mp.isPlaying) applySpeed(mp, playing = true)
-        } catch (_: Exception) {}
-    }
-
-    /** Setting playbackParams starts playback, so only apply when we want to play. */
-    private fun applySpeed(mp: MediaPlayer, playing: Boolean) {
-        try {
-            val params = mp.playbackParams
-            params.speed = reviewSpeed
-            mp.playbackParams = params
-            if (!playing) mp.pause()
-        } catch (_: Exception) {
-            if (playing) try { mp.start() } catch (_: Exception) {}
-        }
+        player?.setPlaybackSpeed(s)
     }
 
     private fun stepFrame(dir: Int) {
-        val mp = reviewMp ?: return
-        try {
-            if (mp.isPlaying) {
-                mp.pause()
-                reviewPosMs = mp.currentPosition.toDouble()
-            }
-            updatePlayLabel()
-            val frameMs = 1000.0 / reviewFps
-            reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, mp.duration.toDouble())
-            mp.seekTo(reviewPosMs.roundToInt().toLong(), MediaPlayer.SEEK_CLOSEST)
-            if (mp.duration > 0) {
-                reviewSeek.progress = (reviewPosMs / mp.duration * 1000).roundToInt().coerceIn(0, 1000)
-            }
-        } catch (_: Exception) {}
+        val p = player ?: return
+        if (p.isPlaying) {
+            p.pause()
+            reviewPosMs = p.currentPosition.toDouble()
+        }
+        val frameMs = 1000.0 / reviewFps
+        val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
+        reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, dur)
+        p.seekTo(reviewPosMs.roundToLong())
+        if (p.duration > 0) {
+            reviewSeek.progress = (reviewPosMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
+        }
     }
 
     private fun updatePlayLabel() {
-        val playing = try { reviewMp?.isPlaying == true } catch (_: Exception) { false }
+        val playing = player?.isPlaying == true
         btnRevPlay.text = if (playing) "❚❚ Pause" else "▶ Play"
     }
 
@@ -641,10 +679,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /* ================================================================
-       toolbar / setups (unchanged behaviour from v0.1)
+       toolbar / menus / setups
        ================================================================ */
 
     private fun setupToolbar() {
+        findViewById<Button>(R.id.btnMenu).setOnClickListener {
+            liveMenu.visibility = if (liveMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+
         val colorRow = findViewById<LinearLayout>(R.id.colorRow)
         for ((i, c) in colors.withIndex()) {
             val b = Button(this)
@@ -709,7 +751,8 @@ class MainActivity : ComponentActivity() {
         Triple("feat.circle", "Circle tool", R.id.btnCircle),
         Triple("feat.grid", "Grid button", R.id.btnGrid),
         Triple("feat.flip", "Flip camera button", R.id.btnFlip),
-        Triple("feat.caps", "Camera info button", R.id.btnCaps)
+        Triple("feat.caps", "Camera info button", R.id.btnCaps),
+        Triple("feat.level", "Spirit level", R.id.levelView)
     )
 
     private fun applyFeaturePrefs() {

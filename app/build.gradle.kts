@@ -11,8 +11,8 @@ android {
         applicationId = "com.testtube.swinglines"
         minSdk = 29
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.4"
+        versionCode = 7
+        versionName = "0.5"
     }
 
     // Shared test-signing key so every CI build signs identically and installs
@@ -65,4 +65,9 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.0")
+    // ExoPlayer: frame-exact seeking for the replay. The stock MediaPlayer
+    // snaps seeks to keyframes (about one per second), which made -1f/+1f
+    // appear to do nothing.
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 }

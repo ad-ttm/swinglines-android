@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000"
@@ -15,6 +16,15 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- spirit level, top centre of live view -->
+    <com.testtube.swinglines.LevelView
+        android:id="@+id/levelView"
+        android:layout_width="130dp"
+        android:layout_height="34dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="64dp" />
+
+    <!-- permanent top bar: menu toggle + rec indicator -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -23,19 +33,9 @@
         android:layout_gravity="top">
 
         <Button
-            android:id="@+id/btnFlip"
+            android:id="@+id/btnMenu"
             style="@style/Pill"
-            android:text="@string/flip" />
-
-        <Button
-            android:id="@+id/btnSpeed"
-            style="@style/Pill"
-            android:text="@string/speed_normal" />
-
-        <Button
-            android:id="@+id/btnCaps"
-            style="@style/Pill"
-            android:text="@string/caps" />
+            android:text="@string/menu" />
 
         <TextView
             android:id="@+id/recIndicator"
@@ -49,29 +49,30 @@
             android:textStyle="bold"
             android:text="@string/rec"
             android:visibility="gone" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <Button
-            android:id="@+id/btnSetups"
-            style="@style/Pill"
-            android:text="@string/setups" />
-
-        <Button
-            android:id="@+id/btnSettings"
-            style="@style/Pill"
-            android:text="@string/settings" />
     </LinearLayout>
 
+    <!-- collapsible live menu -->
     <LinearLayout
+        android:id="@+id/liveMenu"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginTop="58dp"
         android:orientation="vertical"
-        android:layout_gravity="bottom"
-        android:padding="8dp">
+        android:background="#D90B0F0D"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btnFlip" style="@style/Tool" android:text="@string/flip" />
+            <Button android:id="@+id/btnSpeed" style="@style/Tool" android:text="@string/speed_normal" />
+            <Button android:id="@+id/btnSetups" style="@style/Tool" android:text="@string/setups" />
+            <Button android:id="@+id/btnSettings" style="@style/Tool" android:text="@string/settings" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/colorRow"
@@ -96,23 +97,23 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
-            android:layout_marginTop="6dp"
-            android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <Button android:id="@+id/btnUndo" style="@style/Tool" android:text="@string/undo" />
-
-            <ImageButton
-                android:id="@+id/btnRecord"
-                android:layout_width="72dp"
-                android:layout_height="72dp"
-                android:layout_marginHorizontal="16dp"
-                android:background="@drawable/rec_button"
-                android:contentDescription="@string/record" />
-
             <Button android:id="@+id/btnClear" style="@style/Tool" android:text="@string/clear" />
+            <Button android:id="@+id/btnCaps" style="@style/Tool" android:text="@string/caps" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- live view keeps ONLY the record button on screen -->
+    <ImageButton
+        android:id="@+id/btnRecord"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="22dp"
+        android:background="@drawable/rec_button"
+        android:contentDescription="@string/record" />
 
     <!-- ============ instant replay panel ============ -->
     <FrameLayout
@@ -122,43 +123,58 @@
         android:background="#000000"
         android:visibility="gone">
 
-        <VideoView
-            android:id="@+id/reviewVideo"
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/playerView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_gravity="center" />
+            app:use_controller="false"
+            app:resize_mode="fit" />
 
         <com.testtube.swinglines.OverlayView
             android:id="@+id/reviewOverlay"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
-        <TextView
-            android:id="@+id/fpsBadge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top|end"
-            android:layout_margin="12dp"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="7dp"
-            android:background="@drawable/pill_bg"
-            android:textColor="#7EE787"
-            android:textStyle="bold"
-            android:textSize="12sp"
-            android:text="@string/fps_placeholder" />
-
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:orientation="vertical"
-            android:background="#CC0B0F0D"
-            android:padding="8dp">
+            android:orientation="horizontal"
+            android:padding="10dp"
+            android:layout_gravity="top">
 
-            <SeekBar
-                android:id="@+id/reviewSeek"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
+            <Button
+                android:id="@+id/btnRevMenu"
+                style="@style/Pill"
+                android:text="@string/menu" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/fpsBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="7dp"
+                android:background="@drawable/pill_bg"
+                android:textColor="#7EE787"
+                android:textStyle="bold"
+                android:textSize="12sp"
+                android:text="@string/fps_placeholder" />
+        </LinearLayout>
+
+        <!-- collapsible replay menu -->
+        <LinearLayout
+            android:id="@+id/revMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="58dp"
+            android:orientation="vertical"
+            android:background="#D90B0F0D"
+            android:padding="8dp"
+            android:visibility="gone">
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -186,6 +202,16 @@
                 <Button android:id="@+id/btnRevClose" style="@style/Tool" android:text="@string/back_to_camera" />
             </LinearLayout>
         </LinearLayout>
+
+        <!-- the permanent scrub bar: the analysis control -->
+        <SeekBar
+            android:id="@+id/reviewSeek"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginHorizontal="14dp"
+            android:layout_marginBottom="26dp"
+            android:paddingVertical="14dp" />
     </FrameLayout>
 
 </FrameLayout>
