@@ -253,7 +253,7 @@
                 <com.testtube.swinglines.JogStrip
                     android:id="@+id/jogStrip"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
+                    android:layout_height="64dp"
                     android:layout_weight="1"
                     android:layout_marginHorizontal="6dp" />
 
@@ -293,15 +293,30 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
+                android:orientation="vertical"
                 android:background="#B00B0F0D"
                 android:paddingHorizontal="6dp">
 
-                <Button android:id="@+id/ppA" style="@style/Tool" android:text="@string/play_icon" />
-                <Button android:id="@+id/backA" style="@style/Tool" android:text="@string/frame_back" />
-                <SeekBar android:id="@+id/seekA" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
-                <Button android:id="@+id/fwdA" style="@style/Tool" android:text="@string/frame_fwd" />
+                <SeekBar android:id="@+id/seekA" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingVertical="6dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button android:id="@+id/ppA" style="@style/Tool" android:text="@string/play_icon" />
+                    <Button android:id="@+id/backA" style="@style/Tool" android:text="@string/frame_back" />
+
+                    <com.testtube.swinglines.JogStrip
+                        android:id="@+id/jogA"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="4dp" />
+
+                    <Button android:id="@+id/fwdA" style="@style/Tool" android:text="@string/frame_fwd" />
+                </LinearLayout>
             </LinearLayout>
         </FrameLayout>
 
@@ -329,15 +344,30 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_gravity="bottom"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
+                android:orientation="vertical"
                 android:background="#B00B0F0D"
                 android:paddingHorizontal="6dp">
 
-                <Button android:id="@+id/ppB" style="@style/Tool" android:text="@string/play_icon" />
-                <Button android:id="@+id/backB" style="@style/Tool" android:text="@string/frame_back" />
-                <SeekBar android:id="@+id/seekB" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" />
-                <Button android:id="@+id/fwdB" style="@style/Tool" android:text="@string/frame_fwd" />
+                <SeekBar android:id="@+id/seekB" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingVertical="6dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button android:id="@+id/ppB" style="@style/Tool" android:text="@string/play_icon" />
+                    <Button android:id="@+id/backB" style="@style/Tool" android:text="@string/frame_back" />
+
+                    <com.testtube.swinglines.JogStrip
+                        android:id="@+id/jogB"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:layout_marginHorizontal="4dp" />
+
+                    <Button android:id="@+id/fwdB" style="@style/Tool" android:text="@string/frame_fwd" />
+                </LinearLayout>
             </LinearLayout>
         </FrameLayout>
 

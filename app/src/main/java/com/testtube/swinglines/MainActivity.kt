@@ -1122,11 +1122,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val pp: Button,
         val seek: SeekBar,
         back: Button,
-        fwd: Button
+        fwd: Button,
+        jog: JogStrip
     ) {
         var player: ExoPlayer? = null
         var fps = 30
         var posMs = 0.0
+        private var lastSeekAt = 0L
+        private var seekQueued = false
 
         init {
             choose.setOnClickListener { pickClip { uri -> load(uri) } }
@@ -1145,13 +1148,57 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     if (p.isPlaying) p.pause()
                     if (p.duration > 0) {
                         posMs = p.duration.toDouble() * progress / 1000.0
-                        p.seekTo(posMs.roundToLong())
+                        requestPaneSeek()
                     }
                 }
 
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) {}
+                override fun onStartTrackingTouch(sb: SeekBar) {
+                    player?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                }
+
+                override fun onStopTrackingTouch(sb: SeekBar) {
+                    val p = player ?: return
+                    p.setSeekParameters(SeekParameters.EXACT)
+                    p.seekTo(posMs.roundToLong())
+                }
             })
+            // same jog wheel as the replay screen, per pane
+            jog.onGrabbed = {
+                val p = player
+                if (p != null && p.isPlaying) {
+                    p.pause()
+                    posMs = p.currentPosition.toDouble()
+                }
+            }
+            jog.onFrameStep = { dir ->
+                val p = player
+                if (p != null) {
+                    val frameMs = 1000.0 / fps
+                    val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
+                    posMs = (posMs + dir * frameMs).coerceIn(0.0, dur)
+                    requestPaneSeek()
+                    if (p.duration > 0) {
+                        seek.progress = (posMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
+                    }
+                }
+            }
+        }
+
+        /** Throttled, coalesced seek to the latest target - same rules as the replay screen. */
+        private fun requestPaneSeek() {
+            val now = android.os.SystemClock.uptimeMillis()
+            val since = now - lastSeekAt
+            if (since >= 33) {
+                lastSeekAt = now
+                player?.seekTo(posMs.roundToLong())
+            } else if (!seekQueued) {
+                seekQueued = true
+                mainHandler.postDelayed({
+                    seekQueued = false
+                    lastSeekAt = android.os.SystemClock.uptimeMillis()
+                    player?.seekTo(posMs.roundToLong())
+                }, 33 - since)
+            }
         }
 
         fun ensure(): ExoPlayer {
@@ -1227,12 +1274,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         paneA = CmpPane(
             findViewById(R.id.playerA), findViewById(R.id.chooseA),
             findViewById(R.id.ppA), findViewById(R.id.seekA),
-            findViewById(R.id.backA), findViewById(R.id.fwdA)
+            findViewById(R.id.backA), findViewById(R.id.fwdA),
+            findViewById(R.id.jogA)
         )
         paneB = CmpPane(
             findViewById(R.id.playerB), findViewById(R.id.chooseB),
             findViewById(R.id.ppB), findViewById(R.id.seekB),
-            findViewById(R.id.backB), findViewById(R.id.fwdB)
+            findViewById(R.id.backB), findViewById(R.id.fwdB),
+            findViewById(R.id.jogB)
         )
         findViewById<Button>(R.id.cmpPlayBoth).setOnClickListener {
             paneA?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
