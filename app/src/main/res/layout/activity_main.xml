@@ -236,11 +236,14 @@
                 android:shadowRadius="4"
                 android:text="@string/frame_counter_zero" />
 
+            <!-- coarse bar retired at Rich's request - the jog wheel is the control.
+                 Kept in the layout (gone) so position tracking keeps working. -->
             <SeekBar
                 android:id="@+id/reviewSeek"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingVertical="10dp" />
+                android:paddingVertical="10dp"
+                android:visibility="gone" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -253,7 +256,7 @@
                 <com.testtube.swinglines.JogStrip
                     android:id="@+id/jogStrip"
                     android:layout_width="0dp"
-                    android:layout_height="64dp"
+                    android:layout_height="84dp"
                     android:layout_weight="1"
                     android:layout_marginHorizontal="6dp" />
 
