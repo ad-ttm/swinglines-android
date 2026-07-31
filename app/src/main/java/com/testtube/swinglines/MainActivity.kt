@@ -78,6 +78,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var reviewSeek: SeekBar
     private lateinit var fpsBadge: TextView
     private lateinit var btnRevPlay: Button
+    private lateinit var frameCounter: TextView
+    private lateinit var jogStrip: JogStrip
 
     /* ---------- camera state ---------- */
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -123,8 +125,48 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             (reviewPosMs / dur * 1000).roundToInt().coerceIn(0, 1000)
                     }
                 }
+                updateFrameCounter()
                 mainHandler.postDelayed(this, 100)
             }
+        }
+    }
+
+    /* ---------- throttled, coalesced seeking (spec: never more than one seek
+       in flight, at most ~30 per second; always land on the LATEST target) ---------- */
+    private var lastSeekAt = 0L
+    private var seekQueued = false
+
+    private fun requestSeek() {
+        val now = android.os.SystemClock.uptimeMillis()
+        val since = now - lastSeekAt
+        if (since >= 33) {
+            lastSeekAt = now
+            player?.seekTo(reviewPosMs.roundToLong())
+        } else if (!seekQueued) {
+            seekQueued = true
+            mainHandler.postDelayed({
+                seekQueued = false
+                lastSeekAt = android.os.SystemClock.uptimeMillis()
+                player?.seekTo(reviewPosMs.roundToLong())
+            }, 33 - since)
+        }
+        // if a seek is already queued, do nothing: it will pick up the latest
+        // reviewPosMs when it fires - everything in between is dropped
+    }
+
+    private fun updateFrameCounter() {
+        val p = player ?: return
+        val dur = p.duration
+        if (dur <= 0) return
+        val total = (dur * reviewFps / 1000).toInt()
+        val cur = ((reviewPosMs * reviewFps / 1000).toInt() + 1).coerceIn(1, maxOf(total, 1))
+        frameCounter.text = "$cur / $total"
+    }
+
+    private fun syncSeekBar() {
+        val p = player ?: return
+        if (p.duration > 0) {
+            reviewSeek.progress = (reviewPosMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
         }
     }
 
@@ -184,6 +226,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         reviewSeek = findViewById(R.id.reviewSeek)
         fpsBadge = findViewById(R.id.fpsBadge)
         btnRevPlay = findViewById(R.id.btnRevPlay)
+        frameCounter = findViewById(R.id.frameCounter)
+        jogStrip = findViewById(R.id.jogStrip)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
@@ -618,6 +662,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnShare).setOnClickListener { shareCurrent() }
         findViewById<Button>(R.id.btnShareLines).setOnClickListener { shareWithLines() }
 
+        // coarse bar: cheap keyframe seeks while dragging, one exact seek on release
         reviewSeek.max = 1000
         reviewSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
@@ -627,13 +672,42 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val dur = p.duration
                 if (dur > 0) {
                     reviewPosMs = dur.toDouble() * progress / 1000.0
-                    p.seekTo(reviewPosMs.roundToLong())
+                    requestSeek()
+                    updateFrameCounter()
                 }
             }
 
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
+            override fun onStartTrackingTouch(sb: SeekBar) {
+                player?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                val p = player ?: return
+                p.setSeekParameters(SeekParameters.EXACT)
+                p.seekTo(reviewPosMs.roundToLong())
+                updateFrameCounter()
+            }
         })
+
+        // jog strip: the frame-accurate control. Relative, geared, always EXACT.
+        jogStrip.onGrabbed = {
+            val p = player
+            if (p != null && p.isPlaying) {
+                p.pause()
+                reviewPosMs = p.currentPosition.toDouble()
+            }
+        }
+        jogStrip.onFrameStep = { dir ->
+            val p = player
+            if (p != null) {
+                val frameMs = 1000.0 / reviewFps
+                val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
+                reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, dur)
+                requestSeek()
+                syncSeekBar()
+                updateFrameCounter()
+            }
+        }
     }
 
     /**
@@ -714,9 +788,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
         reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, dur)
         p.seekTo(reviewPosMs.roundToLong())
-        if (p.duration > 0) {
-            reviewSeek.progress = (reviewPosMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
-        }
+        syncSeekBar()
+        updateFrameCounter()
     }
 
     private fun updatePlayLabel() {
