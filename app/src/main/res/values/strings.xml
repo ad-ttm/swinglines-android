@@ -14,6 +14,9 @@
     <string name="play_icon">▶</string>
     <string name="play_both">▶ Both</string>
     <string name="frame_counter_zero">0 / 0</string>
+    <string name="to_start">⏮</string>
+    <string name="clips_title">Swing clips</string>
+    <string name="import_short">➕ Import</string>
     <string name="pause_both">❚❚ Both</string>
     <string name="line">╱ Line</string>
     <string name="draw">✎ Draw</string>

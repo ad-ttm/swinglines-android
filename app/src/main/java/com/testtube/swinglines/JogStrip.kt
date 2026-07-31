@@ -28,8 +28,9 @@ class JogStrip(context: Context, attrs: AttributeSet?) : View(context, attrs) {
     private val density = resources.displayMetrics.density
     private fun dp(v: Float): Float = v * density
 
-    private val gearPx = dp(6f) // 6dp of travel = 1 frame
+    private val gearPx = dp(6f) // 6dp of travel = 1 frame at slow speed
     private var lastX = 0f
+    private var lastT = 0L
     private var accum = 0f
     private var tickOffset = 0f
 
@@ -81,6 +82,7 @@ class JogStrip(context: Context, attrs: AttributeSet?) : View(context, attrs) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastX = event.x
+                lastT = event.eventTime
                 accum = 0f
                 onGrabbed?.invoke()
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -89,9 +91,16 @@ class JogStrip(context: Context, attrs: AttributeSet?) : View(context, attrs) {
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.x - lastX
                 lastX = event.x
-                accum += dx
+                val dt = (event.eventTime - lastT).coerceAtLeast(1)
+                lastT = event.eventTime
+                // velocity gearing: slow drags stay 1 frame per 6dp for precision,
+                // fast flicks multiply up to 12x so long rewinds take a few swipes,
+                // and it always stops dead when the finger stops (no inertia)
+                val speedDpMs = kotlin.math.abs(dx) / density / dt
+                val mult = (1f + (speedDpMs - 0.4f).coerceAtLeast(0f) * 4f).coerceAtMost(12f)
+                accum += dx * mult
                 tickOffset += dx
-                // emit whole frames, keep the remainder (spec: accumulate, don't round)
+                // emit whole frames, keep the remainder (accumulate, don't round)
                 while (accum >= gearPx) {
                     accum -= gearPx
                     onFrameStep?.invoke(1) // drag right = forward

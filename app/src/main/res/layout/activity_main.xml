@@ -251,6 +251,7 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
+                <Button android:id="@+id/btnRevStart" style="@style/Tool" android:text="@string/to_start" />
                 <Button android:id="@+id/btnRevBack" style="@style/Tool" android:text="@string/frame_back" />
 
                 <com.testtube.swinglines.JogStrip
@@ -308,6 +309,7 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
+                    <Button android:id="@+id/startA" style="@style/Tool" android:text="@string/to_start" />
                     <Button android:id="@+id/ppA" style="@style/Tool" android:text="@string/play_icon" />
                     <Button android:id="@+id/backA" style="@style/Tool" android:text="@string/frame_back" />
 
@@ -359,6 +361,7 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
+                    <Button android:id="@+id/startB" style="@style/Tool" android:text="@string/to_start" />
                     <Button android:id="@+id/ppB" style="@style/Tool" android:text="@string/play_icon" />
                     <Button android:id="@+id/backB" style="@style/Tool" android:text="@string/frame_back" />
 
@@ -388,6 +391,64 @@
             <Button android:id="@+id/cmpFull" style="@style/Tool" android:text="@string/spd_full" />
             <Button android:id="@+id/cmpClose" style="@style/Tool" android:text="@string/back_to_camera" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- ============ clips: thumbnail grid ============ -->
+    <LinearLayout
+        android:id="@+id/clipsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#0B0F0D"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="10dp">
+
+            <Button android:id="@+id/clipsClose" style="@style/Pill" android:text="@string/back_to_camera" />
+
+            <TextView
+                android:id="@+id/clipsTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="@string/clips_title"
+                android:textColor="#EEF2EF"
+                android:textStyle="bold"
+                android:textSize="15sp" />
+
+            <Button android:id="@+id/clipsImport" style="@style/Pill" android:text="@string/import_short" />
+        </LinearLayout>
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/studentChips"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingHorizontal="8dp"
+                android:paddingBottom="4dp" />
+        </HorizontalScrollView>
+
+        <GridView
+            android:id="@+id/clipsGrid"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:numColumns="3"
+            android:horizontalSpacing="6dp"
+            android:verticalSpacing="6dp"
+            android:padding="6dp"
+            android:stretchMode="columnWidth" />
     </LinearLayout>
 
 </FrameLayout>

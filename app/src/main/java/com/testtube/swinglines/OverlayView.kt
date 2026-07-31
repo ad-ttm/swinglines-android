@@ -44,6 +44,24 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
     private var lastNx = 0f
     private var lastNy = 0f
 
+    // hold-to-move: touching a shape's body no longer grabs it instantly.
+    // Hold still for a beat (haptic confirms) to move it; drag straight away
+    // to draw a NEW shape even when starting on top of an existing one.
+    private var pendingBody: Shape? = null
+    private var downNx = 0f
+    private var downNy = 0f
+    private val holdRunnable = Runnable {
+        val s = pendingBody
+        if (s != null) {
+            pendingBody = null
+            dragShape = s
+            dragIdx = WHOLE_SHAPE
+            lastNx = downNx
+            lastNy = downNy
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
+
     var onShapesChanged: (() -> Unit)? = null
 
     private val density = resources.displayMetrics.density
@@ -161,9 +179,9 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                val grabR = dp(26f)      // endpoint grab radius - a proper fingertip target
-                val bodyTol = dp(18f)    // how close to the shape body counts as grabbing it
-                // 1) endpoint handles first (reshape / resize)
+                val grabR = dp(24f)      // endpoint grab radius - a proper fingertip target
+                val bodyTol = dp(16f)    // how close to the shape body counts as touching it
+                // 1) endpoint handles grab instantly (reshape / resize)
                 for (s in shapes.reversed()) {
                     if (s.type != "line" && s.type != "circle") continue
                     for ((i, p) in s.pts.withIndex()) {
@@ -176,17 +194,17 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                         }
                     }
                 }
-                // 2) shape body - move the whole shape
+                downNx = nx
+                downNy = ny
+                // 2) shape body - arm the hold-to-move; an immediate drag draws instead
                 for (s in shapes.reversed()) {
                     if (hitsBody(s, px, py, w, h, bodyTol)) {
-                        dragShape = s
-                        dragIdx = WHOLE_SHAPE
-                        lastNx = nx
-                        lastNy = ny
+                        pendingBody = s
+                        postDelayed(holdRunnable, 260)
                         return true
                     }
                 }
-                // 3) empty space - start a new shape
+                // 3) empty space - start a new shape straight away
                 drawing = if (tool == "line" || tool == "circle") {
                     Shape(tool, drawColor, mutableListOf(PointF(nx, ny), PointF(nx, ny)))
                 } else {
@@ -196,6 +214,23 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                // finger moved before the hold fired: cancel the grab, draw a new
+                // shape starting from the original touch point
+                if (pendingBody != null) {
+                    val slop = dp(8f)
+                    if (hypot((nx - downNx) * w, (ny - downNy) * h) > slop) {
+                        removeCallbacks(holdRunnable)
+                        pendingBody = null
+                        drawing = if (tool == "line" || tool == "circle") {
+                            Shape(tool, drawColor, mutableListOf(PointF(downNx, downNy), PointF(nx, ny)))
+                        } else {
+                            Shape("draw", drawColor, mutableListOf(PointF(downNx, downNy), PointF(nx, ny)))
+                        }
+                        invalidate()
+                        return true
+                    }
+                    return true
+                }
                 val ds = dragShape
                 if (ds != null) {
                     if (dragIdx == WHOLE_SHAPE || (ds.type == "circle" && dragIdx == 0)) {
@@ -222,6 +257,8 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(holdRunnable)
+                pendingBody = null
                 if (dragShape != null) {
                     dragShape = null
                     onShapesChanged?.invoke()

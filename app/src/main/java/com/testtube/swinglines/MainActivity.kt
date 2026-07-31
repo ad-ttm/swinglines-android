@@ -234,6 +234,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         setupToolbar()
         setupReviewPanel()
         setupCompare()
+        setupClipsPanel()
         restoreCurrentLines()
         overlay.onShapesChanged = { persistCurrentLines() }
 
@@ -652,8 +653,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 p.play()
             }
         }
+        findViewById<Button>(R.id.btnRevStart).setOnClickListener {
+            val p = player ?: return@setOnClickListener
+            p.pause()
+            reviewPosMs = 0.0
+            p.seekTo(0)
+            syncSeekBar()
+            updateFrameCounter()
+        }
         findViewById<Button>(R.id.btnRevBack).setOnClickListener { stepFrame(-1) }
         findViewById<Button>(R.id.btnRevFwd).setOnClickListener { stepFrame(1) }
+        attachHoldRepeat(findViewById(R.id.btnRevBack)) { stepFrame(-1) }
+        attachHoldRepeat(findViewById(R.id.btnRevFwd)) { stepFrame(1) }
         findViewById<Button>(R.id.btnSpeedSlow).setOnClickListener { setSpeed(0.125f) }
         findViewById<Button>(R.id.btnSpeedQuarter).setOnClickListener { setSpeed(0.25f) }
         findViewById<Button>(R.id.btnSpeedFull).setOnClickListener { setSpeed(1.0f) }
@@ -753,6 +764,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         reviewSpeed = if (fps > 60) 0.25f else 1.0f
         reviewPosMs = 0.0
         fpsBadge.text = "${fps}fps"
+        clipsPanel.visibility = View.GONE
         reviewPanel.visibility = View.VISIBLE
         revMenu.visibility = View.GONE
         copyLinesToReview()
@@ -790,6 +802,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         p.seekTo(reviewPosMs.roundToLong())
         syncSeekBar()
         updateFrameCounter()
+    }
+
+    /** Hold a button to repeat its action (~20 steps a second after a short delay). */
+    private fun attachHoldRepeat(b: Button, action: () -> Unit) {
+        var tick: Runnable? = null
+        b.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    val r = object : Runnable {
+                        override fun run() {
+                            action()
+                            mainHandler.postDelayed(this, 50)
+                        }
+                    }
+                    tick = r
+                    mainHandler.postDelayed(r, 380)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    tick?.let { mainHandler.removeCallbacks(it) }
+                    tick = null
+                }
+            }
+            false
+        }
     }
 
     private fun updatePlayLabel() {
@@ -952,11 +988,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         openReview(uri, fps)
     }
 
-    private var clipsShowAll = false
+    private data class ClipRow(val name: String, val uri: Uri, val student: String)
 
     /** Query recorded clips as (label, uri), newest first, optionally filtered to one student. */
-    private fun queryClips(filterStudent: String?): List<Pair<String, Uri>> {
-        val out = mutableListOf<Pair<String, Uri>>()
+    private fun queryClips(filterStudent: String?): List<Pair<String, Uri>> =
+        queryClipRows(filterStudent).map { r ->
+            (if (filterStudent == null && r.student.isNotEmpty()) "${r.student} / ${r.name}" else r.name) to r.uri
+        }
+
+    private fun queryClipRows(filterStudent: String?): List<ClipRow> {
+        val out = mutableListOf<ClipRow>()
         try {
             val proj = arrayOf(
                 MediaStore.Video.Media._ID,
@@ -988,8 +1029,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val name = c.getString(nameI) ?: "swing"
                     val path = c.getString(pathI) ?: ""
                     val sub = path.removePrefix("Movies/SeePath/").removeSuffix("/")
-                    val label = if (filterStudent == null && sub.isNotEmpty() && !sub.startsWith("Movies")) "$sub / $name" else name
-                    out.add(label to uri)
+                    val student = if (sub.isNotEmpty() && !sub.startsWith("Movies")) sub else ""
+                    out.add(ClipRow(name, uri, student))
                 }
             }
         } catch (_: Exception) {
@@ -997,32 +1038,138 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         return out
     }
 
-    private fun showClips() {
-        val student = activeStudent
-        val filtering = student.isNotEmpty() && !clipsShowAll
-        val rows = mutableListOf<Pair<String, Uri?>>()
-        rows.add("➕ Import a video from your phone" to null)
-        if (student.isNotEmpty()) {
-            rows.add((if (filtering) "👤 Showing $student only - tap for everyone" else "👤 Showing everyone - tap for $student only") to null)
+    /* ---------- clips: thumbnail grid panel ---------- */
+
+    private lateinit var clipsPanel: View
+    private lateinit var clipsGrid: android.widget.GridView
+    private lateinit var studentChips: LinearLayout
+    private var clipsFilter: String? = null // null = everyone
+    private var clipsAdapter: ClipsAdapter? = null
+    private val thumbCache = android.util.LruCache<String, android.graphics.Bitmap>(48)
+    private val thumbPool = java.util.concurrent.Executors.newFixedThreadPool(2)
+
+    private fun setupClipsPanel() {
+        clipsPanel = findViewById(R.id.clipsPanel)
+        clipsGrid = findViewById(R.id.clipsGrid)
+        studentChips = findViewById(R.id.studentChips)
+        findViewById<Button>(R.id.clipsClose).setOnClickListener { clipsPanel.visibility = View.GONE }
+        findViewById<Button>(R.id.clipsImport).setOnClickListener {
+            importLauncher.launch(
+                androidx.activity.result.PickVisualMediaRequest(
+                    ActivityResultContracts.PickVisualMedia.VideoOnly
+                )
+            )
         }
-        for (r in queryClips(if (filtering) student else null)) rows.add(r.first to r.second)
-        val labels = rows.map { it.first }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(if (filtering) "$student's swings" else "Swing clips")
-            .setItems(labels) { _, which ->
-                val (name, uri) = rows[which]
-                when {
-                    uri == null && which == 0 -> importLauncher.launch(
-                        androidx.activity.result.PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.VideoOnly
-                        )
-                    )
-                    uri == null -> { clipsShowAll = !clipsShowAll; showClips() }
-                    else -> clipActions(name, uri)
+        clipsGrid.setOnItemClickListener { _, _, pos, _ ->
+            clipsAdapter?.rows?.getOrNull(pos)?.let { openClip(it.uri) }
+        }
+        clipsGrid.setOnItemLongClickListener { _, _, pos, _ ->
+            clipsAdapter?.rows?.getOrNull(pos)?.let { clipActions(it.name, it.uri) }
+            true
+        }
+    }
+
+    private fun showClips() {
+        clipsFilter = activeStudent.ifEmpty { null }
+        refreshStudentChips()
+        refreshClipsGrid()
+        liveMenu.visibility = View.GONE
+        clipsPanel.visibility = View.VISIBLE
+    }
+
+    private fun refreshStudentChips() {
+        studentChips.removeAllViews()
+        val names = mutableListOf<String?>(null)
+        names.addAll(studentList().sorted())
+        for (n in names) {
+            val b = Button(this)
+            b.text = n ?: "Everyone"
+            b.isAllCaps = false
+            b.textSize = 12f
+            b.setTextColor(Color.WHITE)
+            b.background = ContextCompat.getDrawable(this, R.drawable.pill_bg)
+            b.alpha = if (clipsFilter == n) 1f else 0.55f
+            val lp = LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            lp.setMargins(6, 0, 6, 0)
+            b.layoutParams = lp
+            b.setOnClickListener {
+                clipsFilter = n
+                refreshStudentChips()
+                refreshClipsGrid()
+            }
+            studentChips.addView(b)
+        }
+    }
+
+    private fun refreshClipsGrid() {
+        clipsAdapter = ClipsAdapter(queryClipRows(clipsFilter))
+        clipsGrid.adapter = clipsAdapter
+    }
+
+    private inner class ClipsAdapter(val rows: List<ClipRow>) : android.widget.BaseAdapter() {
+        override fun getCount() = rows.size
+        override fun getItem(position: Int) = rows[position]
+        override fun getItemId(position: Int) = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+            val cell: android.widget.FrameLayout
+            val img: android.widget.ImageView
+            val label: TextView
+            if (convertView is android.widget.FrameLayout && convertView.childCount == 2) {
+                cell = convertView
+                img = cell.getChildAt(0) as android.widget.ImageView
+                label = cell.getChildAt(1) as TextView
+            } else {
+                cell = android.widget.FrameLayout(this@MainActivity)
+                cell.layoutParams = android.widget.AbsListView.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    (170 * resources.displayMetrics.density).toInt()
+                )
+                img = android.widget.ImageView(this@MainActivity)
+                img.layoutParams = android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                img.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                img.setBackgroundColor(Color.rgb(20, 27, 22))
+                cell.addView(img)
+                label = TextView(this@MainActivity)
+                val lp = android.widget.FrameLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                lp.gravity = android.view.Gravity.BOTTOM
+                label.layoutParams = lp
+                label.setBackgroundColor(Color.argb(170, 0, 0, 0))
+                label.setTextColor(Color.WHITE)
+                label.textSize = 10f
+                label.maxLines = 2
+                label.setPadding(10, 5, 10, 5)
+                cell.addView(label)
+            }
+            val row = rows[position]
+            label.text = if (row.student.isNotEmpty() && clipsFilter == null) "${row.student}\n${row.name}" else row.name
+            val key = row.uri.toString()
+            img.tag = key
+            val cached = thumbCache.get(key)
+            if (cached != null) {
+                img.setImageBitmap(cached)
+            } else {
+                img.setImageDrawable(null)
+                thumbPool.execute {
+                    try {
+                        val bmp = contentResolver.loadThumbnail(row.uri, android.util.Size(320, 568), null)
+                        thumbCache.put(key, bmp)
+                        runOnUiThread { if (img.tag == key) img.setImageBitmap(bmp) }
+                    } catch (_: Exception) {
+                    }
                 }
             }
-            .setNegativeButton("Close", null)
-            .show()
+            return cell
+        }
     }
 
     private fun clipActions(name: String, uri: Uri) {
@@ -1043,6 +1190,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         try {
             contentResolver.delete(uri, null, null)
             Toast.makeText(this, "Deleted", Toast.LENGTH_SHORT).show()
+            if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
         } catch (_: SecurityException) {
             Toast.makeText(this, "Android protects this one - delete it from your gallery app", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
@@ -1123,7 +1271,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val seek: SeekBar,
         back: Button,
         fwd: Button,
-        jog: JogStrip
+        jog: JogStrip,
+        start: Button
     ) {
         var player: ExoPlayer? = null
         var fps = 30
@@ -1140,6 +1289,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
             back.setOnClickListener { step(-1) }
             fwd.setOnClickListener { step(1) }
+            attachHoldRepeat(back) { step(-1) }
+            attachHoldRepeat(fwd) { step(1) }
+            start.setOnClickListener {
+                val p = player ?: return@setOnClickListener
+                p.pause()
+                posMs = 0.0
+                p.seekTo(0)
+                seek.progress = 0
+            }
             seek.max = 1000
             seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
@@ -1275,13 +1433,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             findViewById(R.id.playerA), findViewById(R.id.chooseA),
             findViewById(R.id.ppA), findViewById(R.id.seekA),
             findViewById(R.id.backA), findViewById(R.id.fwdA),
-            findViewById(R.id.jogA)
+            findViewById(R.id.jogA), findViewById(R.id.startA)
         )
         paneB = CmpPane(
             findViewById(R.id.playerB), findViewById(R.id.chooseB),
             findViewById(R.id.ppB), findViewById(R.id.seekB),
             findViewById(R.id.backB), findViewById(R.id.fwdB),
-            findViewById(R.id.jogB)
+            findViewById(R.id.jogB), findViewById(R.id.startB)
         )
         findViewById<Button>(R.id.cmpPlayBoth).setOnClickListener {
             paneA?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
