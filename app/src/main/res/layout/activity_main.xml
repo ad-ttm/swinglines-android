@@ -158,6 +158,11 @@
                 style="@style/Pill"
                 android:text="@string/menu" />
 
+            <Button
+                android:id="@+id/btnBackLive"
+                style="@style/Pill"
+                android:text="@string/back_live" />
+
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"

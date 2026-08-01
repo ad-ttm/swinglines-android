@@ -644,6 +644,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             revMenu.visibility = if (revMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
         findViewById<Button>(R.id.btnRevClose).setOnClickListener { closeReview() }
+        findViewById<Button>(R.id.btnBackLive).setOnClickListener { closeReview() }
         btnRevPlay.setOnClickListener {
             val p = player ?: return@setOnClickListener
             if (p.isPlaying) {
@@ -778,7 +779,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         mainHandler.post(seekPoll)
     }
 
+    /**
+     * Reverse of copyLinesToReview: whatever is drawn on the replay when it
+     * closes becomes the live view's lines, mapped from the letterboxed frame
+     * back into the live view's centre-cropped space. This makes the replay
+     * the source of truth - lines drawn while analysing survive the trip back.
+     */
+    private fun copyLinesToLive() {
+        val vw = overlay.width.toFloat()
+        val vh = overlay.height.toFloat()
+        val rw = recordedFrameW
+        val rh = recordedFrameH
+        if (vw <= 0f || vh <= 0f || rw <= 0f || rh <= 0f) return
+        val scaleC = max(vw / rw, vh / rh)
+        val fw = vw / (scaleC * rw)
+        val fh = vh / (scaleC * rh)
+        val ox = (1f - fw) / 2f
+        val oy = (1f - fh) / 2f
+        val scaleF = kotlin.math.min(vw / rw, vh / rh)
+        val dw = rw * scaleF / vw
+        val dh = rh * scaleF / vh
+        val dx = (1f - dw) / 2f
+        val dy = (1f - dh) / 2f
+        if (dw <= 0f || dh <= 0f || fw <= 0f || fh <= 0f) return
+        overlay.shapes.clear()
+        for (s in reviewOverlay.shapes) {
+            val pts = s.pts.map { p ->
+                val vx = (p.x - dx) / dw
+                val vy = (p.y - dy) / dh
+                android.graphics.PointF((vx - ox) / fw, (vy - oy) / fh)
+            }.toMutableList()
+            overlay.shapes.add(OverlayView.Shape(s.type, s.color, pts))
+        }
+        overlay.invalidate()
+        persistCurrentLines()
+    }
+
     private fun closeReview() {
+        copyLinesToLive()
         mainHandler.removeCallbacks(seekPoll)
         player?.pause()
         player?.clearMediaItems()

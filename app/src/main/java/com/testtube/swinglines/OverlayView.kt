@@ -69,18 +69,16 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = dp(3.5f)
+        strokeWidth = dp(1.75f) // halved at Rich's request
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.argb(230, 255, 255, 255)
-    }
-    private val handleRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = dp(1.5f)
-        color = Color.argb(160, 0, 0, 0)
+    private val anglePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = dp(15f)
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        isFakeBoldText = true
+        setShadowLayer(dp(3f), 0f, 0f, Color.BLACK)
     }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -128,14 +126,21 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 }
             }
         }
-        // endpoint handles for editable shapes
-        val hr = dp(6f)
-        for (s in shapes) {
-            if (s.type != "line" && s.type != "circle") continue
-            for ((i, p) in s.pts.withIndex()) {
-                if (s.type == "circle" && i > 0) continue
-                canvas.drawCircle(p.x * w, p.y * h, hr, handlePaint)
-                canvas.drawCircle(p.x * w, p.y * h, hr, handleRingPaint)
+        // end dots removed at Rich's request - the endpoint grab zones still
+        // work, there is just nothing drawn there any more
+
+        // live angle readout while a straight line is being drawn or adjusted
+        val active = drawing ?: dragShape
+        if (active != null && active.type == "line" && active.pts.size == 2) {
+            val x1 = active.pts[0].x * w
+            val y1 = active.pts[0].y * h
+            val x2 = active.pts[1].x * w
+            val y2 = active.pts[1].y * h
+            if (hypot(x2 - x1, y2 - y1) > dp(20f)) {
+                val deg = Math.toDegrees(
+                    kotlin.math.atan2(abs(y2 - y1).toDouble(), abs(x2 - x1).toDouble())
+                ).toInt()
+                canvas.drawText("$deg°", (x1 + x2) / 2f, (y1 + y2) / 2f - dp(12f), anglePaint)
             }
         }
     }

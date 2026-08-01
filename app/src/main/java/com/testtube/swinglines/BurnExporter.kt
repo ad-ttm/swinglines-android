@@ -133,7 +133,7 @@ object BurnExporter {
                     style = Paint.Style.STROKE
                     strokeCap = Paint.Cap.ROUND
                     strokeJoin = Paint.Join.ROUND
-                    strokeWidth = ow * 0.012f
+                    strokeWidth = ow * 0.006f // matches the on-screen half-thickness lines
                 }
                 val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
                 val dst = RectF(0f, 0f, ow.toFloat(), oh.toFloat())
