@@ -628,6 +628,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         player?.let { return it }
         val p = ExoPlayer.Builder(this).build()
         p.setSeekParameters(SeekParameters.EXACT)
+        p.repeatMode = Player.REPEAT_MODE_ONE // replays loop: end rolls back to the start
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updatePlayLabel()
@@ -712,8 +713,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val p = player
             if (p != null) {
                 val frameMs = 1000.0 / reviewFps
-                val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
-                reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, dur)
+                val dur = if (p.duration > 0) p.duration.toDouble() else 0.0
+                reviewPosMs = wrapPos(reviewPosMs + dir * frameMs, dur)
                 requestSeek()
                 syncSeekBar()
                 updateFrameCounter()
@@ -790,6 +791,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         player?.setPlaybackSpeed(s)
     }
 
+    /** Advance with wrap-around: past the end lands on the start and vice versa. */
+    private fun wrapPos(pos: Double, durMs: Double): Double {
+        if (durMs <= 0) return pos.coerceAtLeast(0.0)
+        var v = pos
+        if (v >= durMs) v -= durMs
+        if (v < 0) v += durMs
+        return v.coerceIn(0.0, durMs)
+    }
+
     private fun stepFrame(dir: Int) {
         val p = player ?: return
         if (p.isPlaying) {
@@ -797,8 +807,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             reviewPosMs = p.currentPosition.toDouble()
         }
         val frameMs = 1000.0 / reviewFps
-        val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
-        reviewPosMs = (reviewPosMs + dir * frameMs).coerceIn(0.0, dur)
+        val dur = if (p.duration > 0) p.duration.toDouble() else 0.0
+        reviewPosMs = wrapPos(reviewPosMs + dir * frameMs, dur)
         p.seekTo(reviewPosMs.roundToLong())
         syncSeekBar()
         updateFrameCounter()
@@ -1332,8 +1342,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val p = player
                 if (p != null) {
                     val frameMs = 1000.0 / fps
-                    val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
-                    posMs = (posMs + dir * frameMs).coerceIn(0.0, dur)
+                    val dur = if (p.duration > 0) p.duration.toDouble() else 0.0
+                    posMs = wrapPos(posMs + dir * frameMs, dur)
                     requestPaneSeek()
                     if (p.duration > 0) {
                         seek.progress = (posMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
@@ -1388,8 +1398,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             val p = player ?: return
             if (p.isPlaying) { p.pause(); posMs = p.currentPosition.toDouble() }
             val frameMs = 1000.0 / fps
-            val dur = if (p.duration > 0) p.duration.toDouble() else Double.MAX_VALUE
-            posMs = (posMs + dir * frameMs).coerceIn(0.0, dur)
+            val dur = if (p.duration > 0) p.duration.toDouble() else 0.0
+            posMs = wrapPos(posMs + dir * frameMs, dur)
             p.seekTo(posMs.roundToLong())
             if (p.duration > 0) {
                 seek.progress = (posMs / p.duration * 1000).roundToInt().coerceIn(0, 1000)
