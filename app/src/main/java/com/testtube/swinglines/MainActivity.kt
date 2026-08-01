@@ -645,6 +645,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
         findViewById<Button>(R.id.btnRevClose).setOnClickListener { closeReview() }
         findViewById<Button>(R.id.btnBackLive).setOnClickListener { closeReview() }
+        findViewById<Button>(R.id.btnLesson).setOnClickListener { toggleLessonRecording() }
         btnRevPlay.setOnClickListener {
             val p = player ?: return@setOnClickListener
             if (p.isPlaying) {
@@ -1243,6 +1244,76 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             Toast.makeText(this, "Android protects this one - delete it from your gallery app", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Toast.makeText(this, "Couldn't delete: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /* ================================================================
+       lesson recording (screen + voice via MediaProjection)
+       ================================================================ */
+
+    private var lessonRecording = false
+
+    private val micPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) launchProjection()
+            else Toast.makeText(this, "Lesson recording needs the microphone for your voice", Toast.LENGTH_LONG).show()
+        }
+
+    private val projectionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK && result.data != null) {
+                startLessonRecording(result.resultCode, result.data!!)
+            } else {
+                Toast.makeText(this, "Screen recording was not allowed", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+    private fun launchProjection() {
+        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+        projectionLauncher.launch(mpm.createScreenCaptureIntent())
+    }
+
+    private fun toggleLessonRecording() {
+        if (lessonRecording) {
+            val stop = Intent(this, LessonRecordService::class.java)
+            stop.action = LessonRecordService.ACTION_STOP
+            startService(stop)
+            lessonRecording = false
+            findViewById<Button>(R.id.btnLesson).text = getString(R.string.lesson_start)
+            if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        launchProjection()
+    }
+
+    private fun startLessonRecording(resultCode: Int, data: Intent) {
+        try {
+            val name = "lesson-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4"
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, recordFolder())
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("couldn't create output file")
+            val svc = Intent(this, LessonRecordService::class.java)
+            svc.action = LessonRecordService.ACTION_START
+            svc.putExtra(LessonRecordService.EXTRA_RESULT_CODE, resultCode)
+            svc.putExtra(LessonRecordService.EXTRA_RESULT_DATA, data)
+            svc.putExtra(LessonRecordService.EXTRA_OUTPUT_URI, uri.toString())
+            ContextCompat.startForegroundService(this, svc)
+            lessonRecording = true
+            findViewById<Button>(R.id.btnLesson).text = getString(R.string.lesson_stop)
+            Toast.makeText(this, "Recording the lesson - talk away", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Couldn't start lesson recording: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 

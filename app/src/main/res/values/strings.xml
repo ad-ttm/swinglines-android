@@ -18,6 +18,8 @@
     <string name="clips_title">Swing clips</string>
     <string name="import_short">➕ Import</string>
     <string name="back_live">📷 Live</string>
+    <string name="lesson_start">⏺ Lesson</string>
+    <string name="lesson_stop">⏹ Stop</string>
     <string name="pause_both">❚❚ Both</string>
     <string name="line">╱ Line</string>
     <string name="draw">✎ Draw</string>

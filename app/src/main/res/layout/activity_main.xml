@@ -163,6 +163,11 @@
                 style="@style/Pill"
                 android:text="@string/back_live" />
 
+            <Button
+                android:id="@+id/btnLesson"
+                style="@style/Pill"
+                android:text="@string/lesson_start" />
+
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
