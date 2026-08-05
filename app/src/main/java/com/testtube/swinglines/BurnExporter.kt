@@ -22,9 +22,14 @@ import kotlin.math.min
 
 /**
  * Renders overlay lines INTO a copy of a clip so shares carry the annotations.
- * Decodes frames with MediaMetadataRetriever, draws frame + shapes onto the
- * encoder's input surface via Canvas, and muxes with rewritten timestamps.
+ * Decodes frames with MediaMetadataRetriever, composes frame + shapes onto a
+ * bitmap, pushes that to the encoder's input surface through OpenGL ES, and
+ * muxes with rewritten timestamps.
  * Output is 30fps (plenty for sharing) and capped at 20 seconds.
+ *
+ * The GL step is not decoration. A Canvas lock on a MediaCodec input surface is
+ * explicitly unsupported by the platform and "may fail or produce unexpected
+ * results", which on some devices means a silently black or garbled share.
  */
 object BurnExporter {
 
@@ -51,6 +56,7 @@ object BurnExporter {
             var encoder: MediaCodec? = null
             var muxer: MediaMuxer? = null
             var surface: Surface? = null
+            var gl: GlBitmapRecorder? = null
             var pfd: ParcelFileDescriptor? = null
             var outUri: Uri? = null
             var ok = false
@@ -138,48 +144,70 @@ object BurnExporter {
                 val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
                 val dst = RectF(0f, 0f, ow.toFloat(), oh.toFloat())
 
+                val g = GlBitmapRecorder(ow, oh)
+                gl = g
+                val ready = java.util.concurrent.CountDownLatch(1)
+                var glOk = false
+                g.start(surface!!) { good ->
+                    glOk = good
+                    ready.countDown()
+                }
+                ready.await()
+                if (!glOk) throw IllegalStateException("GL encoder surface unavailable")
+
+                val composed = android.graphics.Bitmap.createBitmap(
+                    ow, oh, android.graphics.Bitmap.Config.ARGB_8888
+                )
+                val canvas = android.graphics.Canvas(composed)
+
                 for (i in 0 until frames) {
                     if (listener.isCancelled()) break
                     val tUs = i * 1_000_000L / OUT_FPS
                     val bmp = retriever.getFrameAtTime(tUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                    val canvas = surface!!.lockCanvas(null)
-                    try {
-                        canvas.drawColor(Color.BLACK)
-                        if (bmp != null) canvas.drawBitmap(bmp, null, dst, bmpPaint)
-                        val w = ow.toFloat()
-                        val h = oh.toFloat()
-                        for (s in shapes) {
-                            stroke.color = s.color
-                            if (s.type == "circle" && s.pts.size == 2) {
-                                val cx = s.pts[0].x * w
-                                val cy = s.pts[0].y * h
-                                val r = hypot(
-                                    ((s.pts[1].x - s.pts[0].x) * w).toDouble(),
-                                    ((s.pts[1].y - s.pts[0].y) * h).toDouble()
-                                ).toFloat()
-                                if (r > 2f) canvas.drawCircle(cx, cy, r, stroke)
-                            } else {
-                                for (j in 1 until s.pts.size) {
-                                    canvas.drawLine(
-                                        s.pts[j - 1].x * w, s.pts[j - 1].y * h,
-                                        s.pts[j].x * w, s.pts[j].y * h, stroke
-                                    )
-                                }
+                    canvas.drawColor(Color.BLACK)
+                    if (bmp != null) canvas.drawBitmap(bmp, null, dst, bmpPaint)
+                    val w = ow.toFloat()
+                    val h = oh.toFloat()
+                    for (s in shapes) {
+                        stroke.color = s.color
+                        if (s.type == "circle" && s.pts.size == 2) {
+                            val cx = s.pts[0].x * w
+                            val cy = s.pts[0].y * h
+                            val r = hypot(
+                                ((s.pts[1].x - s.pts[0].x) * w).toDouble(),
+                                ((s.pts[1].y - s.pts[0].y) * h).toDouble()
+                            ).toFloat()
+                            if (r > 2f) canvas.drawCircle(cx, cy, r, stroke)
+                        } else {
+                            for (j in 1 until s.pts.size) {
+                                canvas.drawLine(
+                                    s.pts[j - 1].x * w, s.pts[j - 1].y * h,
+                                    s.pts[j].x * w, s.pts[j].y * h, stroke
+                                )
                             }
                         }
-                    } finally {
-                        surface!!.unlockCanvasAndPost(canvas)
                     }
+                    // wait for the upload before the next frame reuses the bitmap
+                    val drawn = java.util.concurrent.CountDownLatch(1)
+                    g.frame(composed, i * 1_000_000_000L / OUT_FPS) { drawn.countDown() }
+                    drawn.await()
                     bmp?.recycle()
                     drain(false)
                     if (i % 5 == 0) listener.onProgress(i * 100 / frames)
                 }
+                composed.recycle()
                 encoder.signalEndOfInputStream()
                 drain(true)
                 ok = !listener.isCancelled() && outCount > 0
             } catch (_: Exception) {
                 ok = false
             } finally {
+                // GL context goes first: it holds the encoder's input surface
+                try {
+                    val stopped = java.util.concurrent.CountDownLatch(1)
+                    if (gl == null) stopped.countDown() else gl!!.stop { stopped.countDown() }
+                    stopped.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                } catch (_: Exception) {}
                 try { encoder?.stop() } catch (_: Exception) {}
                 try { encoder?.release() } catch (_: Exception) {}
                 try { muxer?.stop() } catch (_: Exception) {}

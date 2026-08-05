@@ -37,6 +37,12 @@
             style="@style/Pill"
             android:text="@string/menu" />
 
+        <Button
+            android:id="@+id/btnLessonLive"
+            style="@style/Pill"
+            android:layout_marginStart="6dp"
+            android:text="@string/lesson_start" />
+
         <TextView
             android:id="@+id/recIndicator"
             android:layout_width="wrap_content"
@@ -139,7 +145,8 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             app:use_controller="false"
-            app:resize_mode="fit" />
+            app:resize_mode="fit"
+            app:surface_type="texture_view" />
 
         <com.testtube.swinglines.OverlayView
             android:id="@+id/reviewOverlay"
@@ -295,7 +302,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 app:use_controller="false"
-                app:resize_mode="fit" />
+                app:resize_mode="fit"
+                app:surface_type="texture_view" />
 
             <Button
                 android:id="@+id/chooseA"
@@ -347,7 +355,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 app:use_controller="false"
-                app:resize_mode="fit" />
+                app:resize_mode="fit"
+                app:surface_type="texture_view" />
 
             <Button
                 android:id="@+id/chooseB"

@@ -646,6 +646,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnRevClose).setOnClickListener { closeReview() }
         findViewById<Button>(R.id.btnBackLive).setOnClickListener { closeReview() }
         findViewById<Button>(R.id.btnLesson).setOnClickListener { toggleLessonRecording() }
+        findViewById<Button>(R.id.btnLessonLive).setOnClickListener { toggleLessonRecording() }
         btnRevPlay.setOnClickListener {
             val p = player ?: return@setOnClickListener
             if (p.isPlaying) {
@@ -1248,39 +1249,38 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     /* ================================================================
-       lesson recording (screen + voice via MediaProjection)
+       lesson recording (internal compositing: video + lines + voice)
        ================================================================ */
 
     private var lessonRecording = false
+    private var lessonRec: MediaRecorder? = null
+    private var lessonGl: GlBitmapRecorder? = null
+    private var lessonUri: Uri? = null
+    private var lessonPfd: ParcelFileDescriptor? = null
+    private var lessonFrame: android.graphics.Bitmap? = null
+    /** one cached grab bitmap per video view on screen - compare shows two */
+    private val lessonGrabs = arrayOfNulls<android.graphics.Bitmap>(2)
+    private var lessonStartNs = 0L
+    private var lessonFrameBusy = false
+    private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    private val lessonPump = object : Runnable {
+        override fun run() {
+            if (lessonRecording) {
+                captureLessonFrame()
+                mainHandler.postDelayed(this, 33)
+            }
+        }
+    }
 
     private val micPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) launchProjection()
+            if (granted) startLesson()
             else Toast.makeText(this, "Lesson recording needs the microphone for your voice", Toast.LENGTH_LONG).show()
         }
 
-    private val projectionLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK && result.data != null) {
-                startLessonRecording(result.resultCode, result.data!!)
-            } else {
-                Toast.makeText(this, "Screen recording was not allowed", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-    private fun launchProjection() {
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-        projectionLauncher.launch(mpm.createScreenCaptureIntent())
-    }
-
     private fun toggleLessonRecording() {
         if (lessonRecording) {
-            val stop = Intent(this, LessonRecordService::class.java)
-            stop.action = LessonRecordService.ACTION_STOP
-            startService(stop)
-            lessonRecording = false
-            findViewById<Button>(R.id.btnLesson).text = getString(R.string.lesson_start)
-            if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
+            stopLesson()
             return
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
@@ -1289,11 +1289,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        launchProjection()
+        startLesson()
     }
 
-    private fun startLessonRecording(resultCode: Int, data: Intent) {
+    private fun updateLessonButtons() {
+        val label = getString(if (lessonRecording) R.string.lesson_stop else R.string.lesson_start)
+        findViewById<Button>(R.id.btnLesson).text = label
+        findViewById<Button>(R.id.btnLessonLive).text = label
+    }
+
+    private fun startLesson() {
+        if (lessonRecording) return
+        val sw = overlay.width
+        val sh = overlay.height
+        if (sw <= 0 || sh <= 0) return
         try {
+            val outW = 720
+            val outH = ((sh.toFloat() / sw * outW).toInt() / 2) * 2
             val name = "lesson-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".mp4"
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
@@ -1303,18 +1315,176 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
             val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("couldn't create output file")
-            val svc = Intent(this, LessonRecordService::class.java)
-            svc.action = LessonRecordService.ACTION_START
-            svc.putExtra(LessonRecordService.EXTRA_RESULT_CODE, resultCode)
-            svc.putExtra(LessonRecordService.EXTRA_RESULT_DATA, data)
-            svc.putExtra(LessonRecordService.EXTRA_OUTPUT_URI, uri.toString())
-            ContextCompat.startForegroundService(this, svc)
-            lessonRecording = true
-            findViewById<Button>(R.id.btnLesson).text = getString(R.string.lesson_stop)
-            Toast.makeText(this, "Recording the lesson - talk away", Toast.LENGTH_SHORT).show()
+            val pfd = contentResolver.openFileDescriptor(uri, "w")
+                ?: throw IllegalStateException("couldn't open output file")
+            lessonUri = uri
+            lessonPfd = pfd
+
+            @Suppress("DEPRECATION")
+            val rec = MediaRecorder()
+            // held from here on, so a throw anywhere below still releases the encoder
+            lessonRec = rec
+            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setOutputFile(pfd.fileDescriptor)
+            rec.setVideoEncodingBitRate(6_000_000)
+            rec.setVideoFrameRate(30)
+            rec.setVideoSize(outW, outH)
+            rec.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            rec.setAudioEncodingBitRate(128_000)
+            rec.setAudioSamplingRate(44_100)
+            rec.prepare()
+
+            lessonFrame = android.graphics.Bitmap.createBitmap(outW, outH, android.graphics.Bitmap.Config.ARGB_8888)
+            lessonGrabs.fill(null)
+            lessonFrameBusy = false
+            val gl = GlBitmapRecorder(outW, outH)
+            lessonGl = gl
+            gl.start(rec.surface) { ok ->
+                runOnUiThread {
+                    if (!ok) {
+                        Toast.makeText(this, "Couldn't start the recorder on this phone", Toast.LENGTH_LONG).show()
+                        abortLesson()
+                        return@runOnUiThread
+                    }
+                    try {
+                        rec.start()
+                        lessonStartNs = android.os.SystemClock.elapsedRealtimeNanos()
+                        lessonRecording = true
+                        updateLessonButtons()
+                        mainHandler.post(lessonPump)
+                        Toast.makeText(this, "Recording the lesson - talk away", Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Couldn't start lesson recording: ${e.message}", Toast.LENGTH_LONG).show()
+                        abortLesson()
+                    }
+                }
+            }
         } catch (e: Exception) {
             Toast.makeText(this, "Couldn't start lesson recording: ${e.message}", Toast.LENGTH_LONG).show()
+            abortLesson()
         }
+    }
+
+    /**
+     * Copies one video view into the frame at its on-screen position.
+     *
+     * The grab bitmap is allocated at OUTPUT scale, not at the view's pixel size.
+     * getBitmap scales the surface into whatever bitmap it is given, so grabbing
+     * straight to 720-wide reads back roughly a third of the pixels a full 1080
+     * grab would, and the later drawBitmap is then 1:1. This is the single
+     * biggest cost in the frame and it runs on the main thread, so it matters.
+     * Slot keeps one cached bitmap per view, since compare shows two at once.
+     */
+    private fun drawLessonVideo(c: android.graphics.Canvas, tv: TextureView?, scale: Float, slot: Int) {
+        if (tv == null || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) return
+        val gw = (tv.width * scale).toInt().coerceAtLeast(1)
+        val gh = (tv.height * scale).toInt().coerceAtLeast(1)
+        val cached = lessonGrabs[slot]
+        val g = if (cached == null || cached.width != gw || cached.height != gh) {
+            android.graphics.Bitmap.createBitmap(gw, gh, android.graphics.Bitmap.Config.ARGB_8888)
+                .also { lessonGrabs[slot] = it }
+        } else {
+            cached
+        }
+        try {
+            tv.getBitmap(g)
+            val loc = IntArray(2)
+            tv.getLocationInWindow(loc)
+            val root = IntArray(2)
+            overlay.getLocationInWindow(root)
+            val dx = (loc[0] - root[0]) * scale
+            val dy = (loc[1] - root[1]) * scale
+            val dst = android.graphics.RectF(dx, dy, dx + tv.width * scale, dy + tv.height * scale)
+            c.drawBitmap(g, null, dst, lessonPaint)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Compose one frame: whatever the coach is looking at, plus its lines, no UI. */
+    private fun captureLessonFrame() {
+        if (lessonFrameBusy) return
+        val frame = lessonFrame ?: return
+        val sw = overlay.width
+        if (sw <= 0) return
+        val scale = frame.width.toFloat() / sw
+        val compareMode = comparePanel.visibility == View.VISIBLE
+        val replayMode = !compareMode && reviewPanel.visibility == View.VISIBLE
+        val c = android.graphics.Canvas(frame)
+        c.drawColor(Color.BLACK)
+        if (compareMode) {
+            // both panes, so a split-screen comparison records as the coach sees it.
+            // The compare panes carry no drawn lines, so there is no overlay to add.
+            drawLessonVideo(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, 0)
+            drawLessonVideo(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, 1)
+        } else {
+            val tv = if (replayMode) (playerView.videoSurfaceView as? TextureView) else previewTexture
+            val ov = if (replayMode) reviewOverlay else overlay
+            drawLessonVideo(c, tv, scale, 0)
+            c.save()
+            c.scale(scale, scale)
+            try { ov.draw(c) } catch (_: Exception) {}
+            c.restore()
+        }
+        lessonFrameBusy = true
+        lessonGl?.frame(frame, android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) {
+            lessonFrameBusy = false
+        }
+    }
+
+    private fun stopLesson() {
+        if (!lessonRecording) return
+        lessonRecording = false
+        updateLessonButtons()
+        mainHandler.removeCallbacks(lessonPump)
+        val gl = lessonGl
+        lessonGl = null
+        gl?.stop {
+            runOnUiThread {
+                var ok = true
+                try { lessonRec?.stop() } catch (_: Exception) { ok = false }
+                try { lessonRec?.release() } catch (_: Exception) {}
+                lessonRec = null
+                try { lessonPfd?.close() } catch (_: Exception) {}
+                lessonPfd = null
+                val uri = lessonUri
+                lessonUri = null
+                lessonFrame = null
+                lessonGrabs.fill(null)
+                if (uri != null) {
+                    try {
+                        if (ok) {
+                            val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                            contentResolver.update(uri, v, null, null)
+                            Toast.makeText(this, "Lesson saved - it's in Clips", Toast.LENGTH_LONG).show()
+                        } else {
+                            contentResolver.delete(uri, null, null)
+                            Toast.makeText(this, "Lesson recording failed to save", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+                if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
+            }
+        }
+    }
+
+    private fun abortLesson() {
+        lessonRecording = false
+        updateLessonButtons()
+        mainHandler.removeCallbacks(lessonPump)
+        try { lessonGl?.stop {} } catch (_: Exception) {}
+        lessonGl = null
+        try { lessonRec?.release() } catch (_: Exception) {}
+        lessonRec = null
+        try { lessonPfd?.close() } catch (_: Exception) {}
+        lessonPfd = null
+        lessonUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) {} }
+        lessonUri = null
+        lessonFrame = null
+        lessonGrabs.fill(null)
     }
 
     /* ================================================================
@@ -1585,6 +1755,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             Toast.makeText(this, "Stop recording first", Toast.LENGTH_SHORT).show()
             return
         }
+        // defensive: make sure nothing can sit over the compare panel
+        clipsPanel.visibility = View.GONE
+        if (reviewPanel.visibility == View.VISIBLE) closeReview()
         liveMenu.visibility = View.GONE
         comparePanel.visibility = View.VISIBLE
         mainHandler.removeCallbacks(cmpPoll)
@@ -1747,7 +1920,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val labels = featureDefs.map { it.second }.toTypedArray()
         val checked = featureDefs.map { prefs.getBoolean(it.first, true) }.toBooleanArray()
         AlertDialog.Builder(this)
-            .setTitle("Features on screen")
+            .setTitle("Features on screen - v" + (try {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            } catch (_: Exception) {
+                "?"
+            }))
             .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
                 prefs.edit().putBoolean(featureDefs[which].first, isChecked).apply()
                 applyFeaturePrefs()
