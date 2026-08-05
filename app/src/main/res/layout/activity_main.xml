@@ -310,6 +310,11 @@
                 app:resize_mode="fit"
                 app:surface_type="texture_view" />
 
+            <com.testtube.swinglines.OverlayView
+                android:id="@+id/overlayA"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
             <Button
                 android:id="@+id/chooseA"
                 style="@style/Pill"
@@ -363,6 +368,11 @@
                 app:resize_mode="fit"
                 app:surface_type="texture_view" />
 
+            <com.testtube.swinglines.OverlayView
+                android:id="@+id/overlayB"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
             <Button
                 android:id="@+id/chooseB"
                 style="@style/Pill"
@@ -404,17 +414,35 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:background="#0B0F0D"
-            android:padding="6dp">
+            android:padding="4dp">
 
-            <Button android:id="@+id/btnLessonCmp" style="@style/Tool" android:text="@string/lesson_start" />
-            <Button android:id="@+id/cmpPlayBoth" style="@style/Tool" android:text="@string/play_both" />
-            <Button android:id="@+id/cmpPauseBoth" style="@style/Tool" android:text="@string/pause_both" />
-            <Button android:id="@+id/cmpQuarter" style="@style/Tool" android:text="@string/spd_quarter" />
-            <Button android:id="@+id/cmpFull" style="@style/Tool" android:text="@string/spd_full" />
-            <Button android:id="@+id/cmpClose" style="@style/Tool" android:text="@string/back_to_camera" />
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/btnLessonCmp" style="@style/Tool" android:text="@string/lesson_start" />
+                <Button android:id="@+id/cmpPlayBoth" style="@style/Tool" android:text="@string/play_both" />
+                <Button android:id="@+id/cmpPauseBoth" style="@style/Tool" android:text="@string/pause_both" />
+                <Button android:id="@+id/cmpQuarter" style="@style/Tool" android:text="@string/spd_quarter" />
+                <Button android:id="@+id/cmpFull" style="@style/Tool" android:text="@string/spd_full" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <Button android:id="@+id/cmpLine" style="@style/Tool" android:text="@string/line" />
+                <Button android:id="@+id/cmpDraw" style="@style/Tool" android:text="@string/draw" />
+                <Button android:id="@+id/cmpUndo" style="@style/Tool" android:text="@string/undo" />
+                <Button android:id="@+id/cmpClear" style="@style/Tool" android:text="@string/clear" />
+                <Button android:id="@+id/cmpClose" style="@style/Tool" android:text="@string/back_to_camera" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 

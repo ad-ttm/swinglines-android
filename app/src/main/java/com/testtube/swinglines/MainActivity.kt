@@ -1406,6 +1406,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    /** Draw an overlay layer at its on-screen position within the capture frame. */
+    private fun drawOverlayAt(
+        c: android.graphics.Canvas,
+        ov: OverlayView,
+        scale: Float,
+        rootX: Int,
+        rootY: Int
+    ) {
+        if (ov.width <= 0 || ov.height <= 0) return
+        val loc = IntArray(2)
+        ov.getLocationInWindow(loc)
+        c.save()
+        c.translate((loc[0] - rootX) * scale, (loc[1] - rootY) * scale)
+        c.scale(scale, scale)
+        try { ov.draw(c) } catch (_: Exception) {}
+        c.restore()
+    }
+
     /** Compose one frame of whatever screen the coach is on - live camera,
      *  replay, or the split-screen compare - always video + lines, never UI. */
     private fun captureLessonFrame() {
@@ -1422,6 +1440,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             comparePanel.visibility == View.VISIBLE -> {
                 drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
                 drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                drawOverlayAt(c, overlayA, scale, root[0], root[1])
+                drawOverlayAt(c, overlayB, scale, root[0], root[1])
             }
             reviewPanel.visibility == View.VISIBLE -> {
                 drawTextureView(c, playerView.videoSurfaceView as? TextureView, scale, root[0], root[1])
@@ -1714,7 +1734,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private var paneA: CmpPane? = null
     private var paneB: CmpPane? = null
+    private lateinit var overlayA: OverlayView
+    private lateinit var overlayB: OverlayView
+    private var lastCmpOverlay: OverlayView? = null
     private var cmpSpeed = 1.0f
+
+    private fun setCmpTool(tool: String) {
+        overlayA.tool = tool
+        overlayB.tool = tool
+        overlayA.drawColor = overlay.drawColor
+        overlayB.drawColor = overlay.drawColor
+        findViewById<Button>(R.id.cmpLine).alpha = if (tool == "line") 1.0f else 0.55f
+        findViewById<Button>(R.id.cmpDraw).alpha = if (tool == "draw") 1.0f else 0.55f
+    }
     private lateinit var comparePanel: View
     private val cmpPoll = object : Runnable {
         override fun run() {
@@ -1751,6 +1783,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.cmpQuarter).setOnClickListener { setCmpSpeed(0.25f) }
         findViewById<Button>(R.id.cmpFull).setOnClickListener { setCmpSpeed(1.0f) }
         findViewById<Button>(R.id.btnLessonCmp).setOnClickListener { toggleLessonRecording() }
+
+        // drawing on the compare halves: each pane has its own line layer, and
+        // undo/clear act on whichever half was drawn on last
+        overlayA = findViewById(R.id.overlayA)
+        overlayB = findViewById(R.id.overlayB)
+        overlayA.onShapesChanged = { lastCmpOverlay = overlayA }
+        overlayB.onShapesChanged = { lastCmpOverlay = overlayB }
+        findViewById<Button>(R.id.cmpLine).setOnClickListener { setCmpTool("line") }
+        findViewById<Button>(R.id.cmpDraw).setOnClickListener { setCmpTool("draw") }
+        findViewById<Button>(R.id.cmpUndo).setOnClickListener {
+            (lastCmpOverlay ?: overlayA).undo()
+        }
+        findViewById<Button>(R.id.cmpClear).setOnClickListener {
+            overlayA.clearAll()
+            overlayB.clearAll()
+        }
+        setCmpTool("line")
         findViewById<Button>(R.id.cmpClose).setOnClickListener { closeCompare() }
         findViewById<Button>(R.id.btnCompare).setOnClickListener { openCompare() }
         // undo any stale hidden state from when Compare was a hideable feature
@@ -1772,6 +1821,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         clipsPanel.visibility = View.GONE
         if (reviewPanel.visibility == View.VISIBLE) closeReview()
         liveMenu.visibility = View.GONE
+        // carry the current pen colour across
+        overlayA.drawColor = overlay.drawColor
+        overlayB.drawColor = overlay.drawColor
         comparePanel.visibility = View.VISIBLE
         mainHandler.removeCallbacks(cmpPoll)
         mainHandler.post(cmpPoll)
@@ -1863,6 +1915,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             b.setOnClickListener {
                 overlay.drawColor = c
                 reviewOverlay.drawColor = c
+                overlayA.drawColor = c
+                overlayB.drawColor = c
                 for (j in 0 until colorRow.childCount) {
                     val cb = colorRow.getChildAt(j) as Button
                     val d = cb.background as GradientDrawable
