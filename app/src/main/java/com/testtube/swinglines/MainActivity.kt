@@ -369,6 +369,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    /**
+     * The camera is only needed on the live screen. Replay and compare show
+     * decoded video instead, and holding a camera capture session open behind
+     * them costs a real slice of the device's media and GPU budget. On Rich's
+     * tablet, camera plus two video decoders plus their surfaces was enough to
+     * get the whole process killed the moment a second swing was loaded.
+     */
+    private fun restoreCameraIfLive() {
+        if (reviewPanel.visibility == View.VISIBLE) return
+        if (comparePanel.visibility == View.VISIBLE) return
+        maybeOpenCamera()
+    }
+
     private fun closeCamera() {
         try { captureSession?.close() } catch (_: Exception) {}
         captureSession = null
@@ -613,10 +626,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         try { captureSession?.close() } catch (_: Exception) {}
         captureSession = null
-        startPreview()
 
+        // Don't rebuild the preview session just to tear it down again: openReview
+        // now releases the camera, and doing both would race session creation
+        // against closing the device.
         if (ok && openReplay && uri != null) {
             openReview(uri, mode.fps)
+        } else {
+            startPreview()
         }
     }
 
@@ -775,6 +792,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         clipsPanel.visibility = View.GONE
         reviewPanel.visibility = View.VISIBLE
         revMenu.visibility = View.GONE
+        // same reasoning as compare: nothing here shows the camera
+        closeCamera()
         copyLinesToReview()
         val p = ensurePlayer()
         p.setMediaItem(MediaItem.fromUri(uri))
@@ -848,6 +867,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         player?.clearMediaItems()
         reviewUri = null
         reviewPanel.visibility = View.GONE
+        restoreCameraIfLive()
     }
 
     private fun setSpeed(s: Float) {
@@ -1286,6 +1306,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var lessonStartNs = 0L
     private var lessonFrameBusy = false
     private var lessonStopping = false
+    private var lessonCompareWarned = false
     private var lessonFrames = 0
     private val MIN_LESSON_MS = 1500L
     private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
@@ -1369,6 +1390,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             lessonFrameBusy = false
             lessonFrames = 0
             lessonStopping = false
+            lessonCompareWarned = false
             val gl = GlBitmapRecorder(outW, outH)
             lessonGl = gl
             gl.start(rec.surface) { ok ->
@@ -1463,13 +1485,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         c.drawColor(Color.BLACK)
         when {
             comparePanel.visibility == View.VISIBLE -> {
-                // only read back panes that actually hold a swing - each grab is
-                // an expensive GPU to CPU copy and two of them can starve the encoder
-                if (paneA?.loaded == true) {
-                    drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
-                }
-                if (paneB?.loaded == true) {
-                    drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                // The compare panes are SurfaceViews, deliberately: TextureView
+                // put them through the GPU as textures and that, on top of a live
+                // camera session, was killing the process on Rich's tablet. A
+                // SurfaceView's pixels cannot be read back, so the swings
+                // themselves cannot go into a lesson. Voice and drawn lines still
+                // do, and we say so rather than quietly handing back black video.
+                if (!lessonCompareWarned) {
+                    lessonCompareWarned = true
+                    Toast.makeText(
+                        this,
+                        "Compare video is not recorded - your voice and lines are",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
                 drawOverlayAt(c, overlayA, scale, root[0], root[1])
                 drawOverlayAt(c, overlayB, scale, root[0], root[1])
@@ -1910,6 +1938,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         overlayA.drawColor = overlay.drawColor
         overlayB.drawColor = overlay.drawColor
         comparePanel.visibility = View.VISIBLE
+        // free the camera before the two decoders start competing for resources
+        closeCamera()
         mainHandler.removeCallbacks(cmpPoll)
         mainHandler.post(cmpPoll)
     }
@@ -1919,6 +1949,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         paneA?.releaseAll()
         paneB?.releaseAll()
         comparePanel.visibility = View.GONE
+        restoreCameraIfLive()
     }
 
     /** Frame rate of an arbitrary clip, for true frame stepping. */

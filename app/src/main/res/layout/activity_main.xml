@@ -307,8 +307,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 app:use_controller="false"
-                app:resize_mode="fit"
-                app:surface_type="texture_view" />
+                app:resize_mode="fit" />
 
             <com.testtube.swinglines.OverlayView
                 android:id="@+id/overlayA"
@@ -365,8 +364,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 app:use_controller="false"
-                app:resize_mode="fit"
-                app:surface_type="texture_view" />
+                app:resize_mode="fit" />
 
             <com.testtube.swinglines.OverlayView
                 android:id="@+id/overlayB"
