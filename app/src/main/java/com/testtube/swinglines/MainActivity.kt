@@ -1490,7 +1490,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
         lessonFrameBusy = true
-        lessonGl?.frame(frame, android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) {
+        // ABSOLUTE System.nanoTime, not an elapsed offset from the start.
+        // MediaRecorder muxes our surface frames against its own audio track,
+        // which is stamped on the system monotonic clock (CLOCK_MONOTONIC =
+        // System.nanoTime; note elapsedRealtimeNanos is CLOCK_BOOTTIME, a
+        // different base). Feeding video timestamps that start near zero left
+        // the two tracks in unrelated time bases, so MPEG4Writer could not
+        // build a coherent file and stop() threw "stop failed."
+        lessonGl?.frame(frame, System.nanoTime()) {
             lessonFrames++
             lessonFrameBusy = false
         }
@@ -1527,6 +1534,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         updateLessonButtons()
         mainHandler.removeCallbacks(lessonPump)
 
+        val secs = (android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) / 1_000_000_000L
         var ok = lessonFrames >= 8
         var err = if (ok) "" else "only $lessonFrames frames were captured"
         if (ok) {
@@ -1535,8 +1543,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             } catch (e: Exception) {
                 ok = false
                 err = e.message ?: "the encoder could not close the file"
+                // nothing on Rich's phone reports back, so put the numbers in the
+                // message itself - he can read them out or screenshot them
+                android.util.Log.e("SeePath", "lesson stop failed after $lessonFrames frames / ${secs}s", e)
             }
         }
+        if (!ok) err = "$err ($lessonFrames frames, ${secs}s)"
         try { lessonRec?.release() } catch (_: Exception) {}
         lessonRec = null
 
