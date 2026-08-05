@@ -175,6 +175,11 @@
                 style="@style/Pill"
                 android:text="@string/lesson_start" />
 
+            <Button
+                android:id="@+id/btnRevCompare"
+                style="@style/Pill"
+                android:text="@string/compare" />
+
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
@@ -404,6 +409,7 @@
             android:background="#0B0F0D"
             android:padding="6dp">
 
+            <Button android:id="@+id/btnLessonCmp" style="@style/Tool" android:text="@string/lesson_start" />
             <Button android:id="@+id/cmpPlayBoth" style="@style/Tool" android:text="@string/play_both" />
             <Button android:id="@+id/cmpPauseBoth" style="@style/Tool" android:text="@string/pause_both" />
             <Button android:id="@+id/cmpQuarter" style="@style/Tool" android:text="@string/spd_quarter" />

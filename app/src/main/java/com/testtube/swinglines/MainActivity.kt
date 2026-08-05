@@ -647,6 +647,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnBackLive).setOnClickListener { closeReview() }
         findViewById<Button>(R.id.btnLesson).setOnClickListener { toggleLessonRecording() }
         findViewById<Button>(R.id.btnLessonLive).setOnClickListener { toggleLessonRecording() }
+        findViewById<Button>(R.id.btnRevCompare).setOnClickListener {
+            closeReview()
+            openCompare()
+        }
         btnRevPlay.setOnClickListener {
             val p = player ?: return@setOnClickListener
             if (p.isPlaying) {
@@ -1295,6 +1299,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val label = getString(if (lessonRecording) R.string.lesson_stop else R.string.lesson_start)
         findViewById<Button>(R.id.btnLesson).text = label
         findViewById<Button>(R.id.btnLessonLive).text = label
+        findViewById<Button>(R.id.btnLessonCmp).text = label
     }
 
     private fun startLesson() {
@@ -1745,8 +1750,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
         findViewById<Button>(R.id.cmpQuarter).setOnClickListener { setCmpSpeed(0.25f) }
         findViewById<Button>(R.id.cmpFull).setOnClickListener { setCmpSpeed(1.0f) }
+        findViewById<Button>(R.id.btnLessonCmp).setOnClickListener { toggleLessonRecording() }
         findViewById<Button>(R.id.cmpClose).setOnClickListener { closeCompare() }
         findViewById<Button>(R.id.btnCompare).setOnClickListener { openCompare() }
+        // undo any stale hidden state from when Compare was a hideable feature
+        findViewById<Button>(R.id.btnCompare).visibility = View.VISIBLE
     }
 
     private fun setCmpSpeed(s: Float) {
@@ -1910,8 +1918,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
         Triple("feat.level", "Spirit level", R.id.levelView),
         Triple("feat.clips", "Clips button", R.id.btnClips),
-        Triple("feat.student", "Student folders", R.id.btnStudent),
-        Triple("feat.compare", "Compare (split screen)", R.id.btnCompare)
+        Triple("feat.student", "Student folders", R.id.btnStudent)
+        // Compare is deliberately NOT hideable (like Speed): a stale hidden
+        // setting once made it vanish for the coach and nobody could tell why.
     )
 
     private fun applyFeaturePrefs() {
