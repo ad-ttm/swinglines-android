@@ -1265,6 +1265,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val lessonGrabs = HashMap<TextureView, android.graphics.Bitmap>()
     private var lessonStartNs = 0L
     private var lessonFrameBusy = false
+    private var lessonStopping = false
+    private var lessonFrames = 0
+    private val MIN_LESSON_MS = 1500L
     private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
     private val lessonPump = object : Runnable {
         override fun run() {
@@ -1344,6 +1347,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             lessonFrame = android.graphics.Bitmap.createBitmap(outW, outH, android.graphics.Bitmap.Config.ARGB_8888)
             lessonGrabs.clear()
             lessonFrameBusy = false
+            lessonFrames = 0
+            lessonStopping = false
             val gl = GlBitmapRecorder(outW, outH)
             lessonGl = gl
             gl.start(rec.surface) { ok ->
@@ -1438,8 +1443,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         c.drawColor(Color.BLACK)
         when {
             comparePanel.visibility == View.VISIBLE -> {
-                drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
-                drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                // only read back panes that actually hold a swing - each grab is
+                // an expensive GPU to CPU copy and two of them can starve the encoder
+                if (paneA?.loaded == true) {
+                    drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                }
+                if (paneB?.loaded == true) {
+                    drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                }
                 drawOverlayAt(c, overlayA, scale, root[0], root[1])
                 drawOverlayAt(c, overlayB, scale, root[0], root[1])
             }
@@ -1460,49 +1471,85 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
         lessonFrameBusy = true
         lessonGl?.frame(frame, android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) {
+            lessonFrames++
             lessonFrameBusy = false
         }
     }
 
+    /**
+     * Stopping is staged, because MediaRecorder refuses to finalise a file that
+     * has too little in it: hold on until the clip has real duration and real
+     * frames, let any in-flight GL frame land, stop the recorder BEFORE tearing
+     * down the GL context (destroying the EGL surface first can leave the
+     * encoder unable to close), and only then release everything.
+     */
     private fun stopLesson() {
-        if (!lessonRecording) return
+        if (!lessonRecording || lessonStopping) return
+        lessonStopping = true
+        val elapsedMs = (android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) / 1_000_000L
+        val wait = (MIN_LESSON_MS - elapsedMs).coerceAtLeast(0L)
+        if (wait > 0) Toast.makeText(this, "Finishing the recording...", Toast.LENGTH_SHORT).show()
+        mainHandler.postDelayed({ awaitFramesThenFinish(0) }, wait)
+    }
+
+    /** Wait for the last submitted frame to reach the encoder, then finish. */
+    private fun awaitFramesThenFinish(tries: Int) {
+        if (lessonFrameBusy && tries < 20) {
+            mainHandler.postDelayed({ awaitFramesThenFinish(tries + 1) }, 25)
+            return
+        }
+        finishLesson()
+    }
+
+    private fun finishLesson() {
         lessonRecording = false
+        lessonStopping = false
         updateLessonButtons()
         mainHandler.removeCallbacks(lessonPump)
-        val gl = lessonGl
-        lessonGl = null
-        gl?.stop {
-            runOnUiThread {
-                var ok = true
-                try { lessonRec?.stop() } catch (_: Exception) { ok = false }
-                try { lessonRec?.release() } catch (_: Exception) {}
-                lessonRec = null
-                try { lessonPfd?.close() } catch (_: Exception) {}
-                lessonPfd = null
-                val uri = lessonUri
-                lessonUri = null
-                lessonFrame = null
-                lessonGrabs.clear()
-                if (uri != null) {
-                    try {
-                        if (ok) {
-                            val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-                            contentResolver.update(uri, v, null, null)
-                            Toast.makeText(this, "Lesson saved - it's in Clips", Toast.LENGTH_LONG).show()
-                        } else {
-                            contentResolver.delete(uri, null, null)
-                            Toast.makeText(this, "Lesson recording failed to save", Toast.LENGTH_LONG).show()
-                        }
-                    } catch (_: Exception) {
-                    }
-                }
-                if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
+
+        var ok = lessonFrames >= 8
+        var err = if (ok) "" else "only $lessonFrames frames were captured"
+        if (ok) {
+            try {
+                lessonRec?.stop()
+            } catch (e: Exception) {
+                ok = false
+                err = e.message ?: "the encoder could not close the file"
             }
         }
+        try { lessonRec?.release() } catch (_: Exception) {}
+        lessonRec = null
+
+        val gl = lessonGl
+        lessonGl = null
+        gl?.stop {}
+
+        try { lessonPfd?.close() } catch (_: Exception) {}
+        lessonPfd = null
+        val uri = lessonUri
+        lessonUri = null
+        lessonFrame = null
+        lessonGrabs.clear()
+        if (uri != null) {
+            try {
+                if (ok) {
+                    val v = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                    contentResolver.update(uri, v, null, null)
+                    Toast.makeText(this, "Lesson saved - it's in Clips", Toast.LENGTH_LONG).show()
+                } else {
+                    contentResolver.delete(uri, null, null)
+                    Toast.makeText(this, "Lesson did not save: $err", Toast.LENGTH_LONG).show()
+                }
+            } catch (_: Exception) {
+            }
+        }
+        if (clipsPanel.visibility == View.VISIBLE) refreshClipsGrid()
     }
 
     private fun abortLesson() {
         lessonRecording = false
+        lessonStopping = false
+        lessonFrames = 0
         updateLessonButtons()
         mainHandler.removeCallbacks(lessonPump)
         try { lessonGl?.stop {} } catch (_: Exception) {}
@@ -1596,6 +1643,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var player: ExoPlayer? = null
         var fps = 30
         var posMs = 0.0
+        /** true once a swing has been chosen for this half, so the lesson
+         *  capture can skip the expensive readback on an empty pane */
+        var loaded = false
         private var lastSeekAt = 0L
         private var seekQueued = false
 
@@ -1701,6 +1751,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             p.setPlaybackSpeed(cmpSpeed)
             p.playWhenReady = false
             choose.visibility = View.GONE
+            loaded = true
         }
 
         fun step(dir: Int) {
@@ -1729,6 +1780,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             player?.release()
             player = null
             choose.visibility = View.VISIBLE
+            loaded = false
         }
     }
 
