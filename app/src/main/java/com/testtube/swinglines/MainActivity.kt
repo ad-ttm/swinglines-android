@@ -808,17 +808,37 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val dx = (1f - dw) / 2f
         val dy = (1f - dh) / 2f
         if (dw <= 0f || dh <= 0f || fw <= 0f || fh <= 0f) return
-        overlay.shapes.clear()
+        // The replay letterboxes the whole frame; the live view centre-crops it.
+        // So the replay shows picture that the live view cannot: anything drawn
+        // out there maps outside 0..1 and would come back invisible AND
+        // untouchable, since the live overlay clamps every touch to its bounds.
+        // Shapes with nothing left on screen are dropped and counted, rather
+        // than silently becoming geometry the coach can neither see nor delete.
+        val mapped = mutableListOf<OverlayView.Shape>()
+        var dropped = 0
         for (s in reviewOverlay.shapes) {
             val pts = s.pts.map { p ->
                 val vx = (p.x - dx) / dw
                 val vy = (p.y - dy) / dh
                 android.graphics.PointF((vx - ox) / fw, (vy - oy) / fh)
             }.toMutableList()
-            overlay.shapes.add(OverlayView.Shape(s.type, s.color, pts))
+            // keep anything still partly on screen - a line running off the edge
+            // is still a usable reference
+            val anyVisible = pts.any { it.x >= 0f && it.x <= 1f && it.y >= 0f && it.y <= 1f }
+            if (anyVisible) mapped.add(OverlayView.Shape(s.type, s.color, pts)) else dropped++
         }
+        overlay.shapes.clear()
+        overlay.shapes.addAll(mapped)
         overlay.invalidate()
         persistCurrentLines()
+        if (dropped > 0) {
+            val what = if (dropped == 1) "1 line was" else "$dropped lines were"
+            Toast.makeText(
+                this,
+                "$what drawn outside what the camera shows, so it could not come back",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun closeReview() {
@@ -1732,6 +1752,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             player?.let { return it }
             val p = ExoPlayer.Builder(this@MainActivity).build()
             p.setSeekParameters(SeekParameters.EXACT)
+            p.repeatMode = Player.REPEAT_MODE_ONE // loop, same as the replay screen
             p.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     pp.text = if (isPlaying) "❚❚" else "▶"

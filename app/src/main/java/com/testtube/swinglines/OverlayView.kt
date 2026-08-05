@@ -44,21 +44,27 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
     private var lastNx = 0f
     private var lastNy = 0f
 
-    // hold-to-move: touching a shape's body no longer grabs it instantly.
-    // Hold still for a beat (haptic confirms) to move it; drag straight away
-    // to draw a NEW shape even when starting on top of an existing one.
-    private var pendingBody: Shape? = null
+    // hold-to-grab: touching an existing shape no longer grabs it instantly.
+    // Hold still for a beat (haptic plus a highlight confirms) to grab it; drag
+    // straight away to draw a NEW shape even when starting on top of one.
+    //
+    // This applies to ENDPOINTS as well as bodies. Golf lines radiate from the
+    // ball, so their endpoints pile up in one spot: with instant endpoint grabs
+    // every new line started near the ball reshaped an old line instead.
+    private var pendingShape: Shape? = null
+    private var pendingIdx: Int = WHOLE_SHAPE
     private var downNx = 0f
     private var downNy = 0f
     private val holdRunnable = Runnable {
-        val s = pendingBody
+        val s = pendingShape
         if (s != null) {
-            pendingBody = null
+            pendingShape = null
             dragShape = s
-            dragIdx = WHOLE_SHAPE
+            dragIdx = pendingIdx
             lastNx = downNx
             lastNy = downNy
             performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            invalidate() // show the grab highlight
         }
     }
 
@@ -79,6 +85,14 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
         setShadowLayer(dp(3f), 0f, 0f, Color.BLACK)
+    }
+    /** halo drawn under a grabbed shape so it is obvious what is being moved */
+    private val grabPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(7f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = Color.argb(120, 255, 255, 255)
     }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -105,26 +119,13 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
         val all = ArrayList<Shape>(shapes)
         drawing?.let { all.add(it) }
+        val grabbed = dragShape
         for (s in all) {
+            // grabbed shape gets a halo underneath first, so the coach can see
+            // what he has hold of. Haptic alone left it ambiguous.
+            if (s === grabbed) strokeShape(canvas, s, w, h, grabPaint)
             strokePaint.color = s.color
-            when (s.type) {
-                "circle" -> {
-                    if (s.pts.size == 2) {
-                        val cx = s.pts[0].x * w
-                        val cy = s.pts[0].y * h
-                        val r = hypot((s.pts[1].x - s.pts[0].x) * w, (s.pts[1].y - s.pts[0].y) * h)
-                        if (r > dp(2f)) canvas.drawCircle(cx, cy, r, strokePaint)
-                    }
-                }
-                else -> {
-                    for (i in 1 until s.pts.size) {
-                        canvas.drawLine(
-                            s.pts[i - 1].x * w, s.pts[i - 1].y * h,
-                            s.pts[i].x * w, s.pts[i].y * h, strokePaint
-                        )
-                    }
-                }
-            }
+            strokeShape(canvas, s, w, h, strokePaint)
         }
         // end dots removed at Rich's request - the endpoint grab zones still
         // work, there is just nothing drawn there any more
@@ -142,6 +143,25 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 ).toInt()
                 canvas.drawText("$deg°", (x1 + x2) / 2f, (y1 + y2) / 2f - dp(12f), anglePaint)
             }
+        }
+    }
+
+    /** Draw one shape's outline with the given paint. */
+    private fun strokeShape(canvas: Canvas, s: Shape, w: Float, h: Float, paint: Paint) {
+        if (s.type == "circle") {
+            if (s.pts.size == 2) {
+                val cx = s.pts[0].x * w
+                val cy = s.pts[0].y * h
+                val r = hypot((s.pts[1].x - s.pts[0].x) * w, (s.pts[1].y - s.pts[0].y) * h)
+                if (r > dp(2f)) canvas.drawCircle(cx, cy, r, paint)
+            }
+            return
+        }
+        for (i in 1 until s.pts.size) {
+            canvas.drawLine(
+                s.pts[i - 1].x * w, s.pts[i - 1].y * h,
+                s.pts[i].x * w, s.pts[i].y * h, paint
+            )
         }
     }
 
@@ -186,25 +206,36 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             MotionEvent.ACTION_DOWN -> {
                 val grabR = dp(24f)      // endpoint grab radius - a proper fingertip target
                 val bodyTol = dp(16f)    // how close to the shape body counts as touching it
-                // 1) endpoint handles grab instantly (reshape / resize)
+                downNx = nx
+                downNy = ny
+                // 1) endpoint handles - arm the hold-to-grab, same as bodies below.
+                // Nearest endpoint wins, so clustered ends round the ball pick the
+                // one actually under the finger rather than the topmost shape.
+                var bestShape: Shape? = null
+                var bestIdx = WHOLE_SHAPE
+                var bestDist = Float.MAX_VALUE
                 for (s in shapes.reversed()) {
                     if (s.type != "line" && s.type != "circle") continue
                     for ((i, p) in s.pts.withIndex()) {
-                        if (hypot(p.x * w - px, p.y * h - py) <= grabR) {
-                            dragShape = s
-                            dragIdx = i
-                            lastNx = nx
-                            lastNy = ny
-                            return true
+                        val d = hypot(p.x * w - px, p.y * h - py)
+                        if (d <= grabR && d < bestDist) {
+                            bestDist = d
+                            bestShape = s
+                            bestIdx = i
                         }
                     }
                 }
-                downNx = nx
-                downNy = ny
+                if (bestShape != null) {
+                    pendingShape = bestShape
+                    pendingIdx = bestIdx
+                    postDelayed(holdRunnable, 260)
+                    return true
+                }
                 // 2) shape body - arm the hold-to-move; an immediate drag draws instead
                 for (s in shapes.reversed()) {
                     if (hitsBody(s, px, py, w, h, bodyTol)) {
-                        pendingBody = s
+                        pendingShape = s
+                        pendingIdx = WHOLE_SHAPE
                         postDelayed(holdRunnable, 260)
                         return true
                     }
@@ -221,11 +252,11 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             MotionEvent.ACTION_MOVE -> {
                 // finger moved before the hold fired: cancel the grab, draw a new
                 // shape starting from the original touch point
-                if (pendingBody != null) {
+                if (pendingShape != null) {
                     val slop = dp(8f)
                     if (hypot((nx - downNx) * w, (ny - downNy) * h) > slop) {
                         removeCallbacks(holdRunnable)
-                        pendingBody = null
+                        pendingShape = null
                         drawing = if (tool == "line" || tool == "circle") {
                             Shape(tool, drawColor, mutableListOf(PointF(downNx, downNy), PointF(nx, ny)))
                         } else {
@@ -263,10 +294,11 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(holdRunnable)
-                pendingBody = null
+                pendingShape = null
                 if (dragShape != null) {
                     dragShape = null
                     onShapesChanged?.invoke()
+                    invalidate() // clear the grab highlight
                     performClick()
                     return true
                 }

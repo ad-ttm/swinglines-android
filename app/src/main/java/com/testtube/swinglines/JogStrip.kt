@@ -94,10 +94,10 @@ class JogStrip(context: Context, attrs: AttributeSet?) : View(context, attrs) {
                 val dt = (event.eventTime - lastT).coerceAtLeast(1)
                 lastT = event.eventTime
                 // velocity gearing: slow drags stay 1 frame per 6dp for precision,
-                // fast flicks multiply up to 12x so long rewinds take a few swipes,
+                // fast flicks multiply up to 20x so long rewinds take a few swipes,
                 // and it always stops dead when the finger stops (no inertia)
                 val speedDpMs = kotlin.math.abs(dx) / density / dt
-                val mult = (1f + (speedDpMs - 0.4f).coerceAtLeast(0f) * 4f).coerceAtMost(12f)
+                val mult = (1f + (speedDpMs - 0.4f).coerceAtLeast(0f) * 4f).coerceAtMost(20f)
                 accum += dx * mult
                 tickOffset += dx
                 // emit whole frames, keep the remainder (accumulate, don't round)
