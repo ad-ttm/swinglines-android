@@ -1258,8 +1258,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var lessonUri: Uri? = null
     private var lessonPfd: ParcelFileDescriptor? = null
     private var lessonFrame: android.graphics.Bitmap? = null
-    /** one cached grab bitmap per video view on screen - compare shows two */
-    private val lessonGrabs = arrayOfNulls<android.graphics.Bitmap>(2)
+    private val lessonGrabs = HashMap<TextureView, android.graphics.Bitmap>()
     private var lessonStartNs = 0L
     private var lessonFrameBusy = false
     private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
@@ -1338,7 +1337,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             rec.prepare()
 
             lessonFrame = android.graphics.Bitmap.createBitmap(outW, outH, android.graphics.Bitmap.Config.ARGB_8888)
-            lessonGrabs.fill(null)
+            lessonGrabs.clear()
             lessonFrameBusy = false
             val gl = GlBitmapRecorder(outW, outH)
             lessonGl = gl
@@ -1368,24 +1367,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    /**
-     * Copies one video view into the frame at its on-screen position.
-     *
-     * The grab bitmap is allocated at OUTPUT scale, not at the view's pixel size.
-     * getBitmap scales the surface into whatever bitmap it is given, so grabbing
-     * straight to 720-wide reads back roughly a third of the pixels a full 1080
-     * grab would, and the later drawBitmap is then 1:1. This is the single
-     * biggest cost in the frame and it runs on the main thread, so it matters.
-     * Slot keeps one cached bitmap per view, since compare shows two at once.
-     */
-    private fun drawLessonVideo(c: android.graphics.Canvas, tv: TextureView?, scale: Float, slot: Int) {
+    private fun drawTextureView(
+        c: android.graphics.Canvas,
+        tv: TextureView?,
+        scale: Float,
+        rootX: Int,
+        rootY: Int
+    ) {
         if (tv == null || !tv.isAvailable || tv.width <= 0 || tv.height <= 0) return
+        // Grab at OUTPUT scale, not at the view's pixel size. getBitmap scales the
+        // surface into whatever bitmap it is given, so reading straight to 720-wide
+        // moves roughly a third of the pixels a full 1080 grab would and leaves the
+        // drawBitmap below at 1:1. This is the biggest cost in the frame and it runs
+        // on the main thread, so it matters.
         val gw = (tv.width * scale).toInt().coerceAtLeast(1)
         val gh = (tv.height * scale).toInt().coerceAtLeast(1)
-        val cached = lessonGrabs[slot]
+        val cached = lessonGrabs[tv]
         val g = if (cached == null || cached.width != gw || cached.height != gh) {
             android.graphics.Bitmap.createBitmap(gw, gh, android.graphics.Bitmap.Config.ARGB_8888)
-                .also { lessonGrabs[slot] = it }
+                .also { lessonGrabs[tv] = it }
         } else {
             cached
         }
@@ -1393,40 +1393,45 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             tv.getBitmap(g)
             val loc = IntArray(2)
             tv.getLocationInWindow(loc)
-            val root = IntArray(2)
-            overlay.getLocationInWindow(root)
-            val dx = (loc[0] - root[0]) * scale
-            val dy = (loc[1] - root[1]) * scale
+            val dx = (loc[0] - rootX) * scale
+            val dy = (loc[1] - rootY) * scale
             val dst = android.graphics.RectF(dx, dy, dx + tv.width * scale, dy + tv.height * scale)
             c.drawBitmap(g, null, dst, lessonPaint)
         } catch (_: Exception) {
         }
     }
 
-    /** Compose one frame: whatever the coach is looking at, plus its lines, no UI. */
+    /** Compose one frame of whatever screen the coach is on - live camera,
+     *  replay, or the split-screen compare - always video + lines, never UI. */
     private fun captureLessonFrame() {
         if (lessonFrameBusy) return
         val frame = lessonFrame ?: return
         val sw = overlay.width
         if (sw <= 0) return
         val scale = frame.width.toFloat() / sw
-        val compareMode = comparePanel.visibility == View.VISIBLE
-        val replayMode = !compareMode && reviewPanel.visibility == View.VISIBLE
+        val root = IntArray(2)
+        overlay.getLocationInWindow(root)
         val c = android.graphics.Canvas(frame)
         c.drawColor(Color.BLACK)
-        if (compareMode) {
-            // both panes, so a split-screen comparison records as the coach sees it.
-            // The compare panes carry no drawn lines, so there is no overlay to add.
-            drawLessonVideo(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, 0)
-            drawLessonVideo(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, 1)
-        } else {
-            val tv = if (replayMode) (playerView.videoSurfaceView as? TextureView) else previewTexture
-            val ov = if (replayMode) reviewOverlay else overlay
-            drawLessonVideo(c, tv, scale, 0)
-            c.save()
-            c.scale(scale, scale)
-            try { ov.draw(c) } catch (_: Exception) {}
-            c.restore()
+        when {
+            comparePanel.visibility == View.VISIBLE -> {
+                drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+            }
+            reviewPanel.visibility == View.VISIBLE -> {
+                drawTextureView(c, playerView.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                c.save()
+                c.scale(scale, scale)
+                try { reviewOverlay.draw(c) } catch (_: Exception) {}
+                c.restore()
+            }
+            else -> {
+                drawTextureView(c, previewTexture, scale, root[0], root[1])
+                c.save()
+                c.scale(scale, scale)
+                try { overlay.draw(c) } catch (_: Exception) {}
+                c.restore()
+            }
         }
         lessonFrameBusy = true
         lessonGl?.frame(frame, android.os.SystemClock.elapsedRealtimeNanos() - lessonStartNs) {
@@ -1452,7 +1457,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val uri = lessonUri
                 lessonUri = null
                 lessonFrame = null
-                lessonGrabs.fill(null)
+                lessonGrabs.clear()
                 if (uri != null) {
                     try {
                         if (ok) {
@@ -1484,7 +1489,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         lessonUri?.let { try { contentResolver.delete(it, null, null) } catch (_: Exception) {} }
         lessonUri = null
         lessonFrame = null
-        lessonGrabs.fill(null)
+        lessonGrabs.clear()
     }
 
     /* ================================================================
