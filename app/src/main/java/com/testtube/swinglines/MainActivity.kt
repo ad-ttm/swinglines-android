@@ -1306,6 +1306,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var lessonStartNs = 0L
     private var lessonFrameBusy = false
     private var lessonStopping = false
+    private var lessonCompareWarned = false
     private var lessonFrames = 0
     private val MIN_LESSON_MS = 1500L
     private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
@@ -1389,6 +1390,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             lessonFrameBusy = false
             lessonFrames = 0
             lessonStopping = false
+            lessonCompareWarned = false
             val gl = GlBitmapRecorder(outW, outH)
             lessonGl = gl
             gl.start(rec.surface) { ok ->
@@ -1483,20 +1485,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         c.drawColor(Color.BLACK)
         when {
             comparePanel.visibility == View.VISIBLE -> {
-                // Panes are TextureViews again so the swings themselves land in a
-                // lesson. That is only safe because the camera is now released on
-                // entering Compare: it was the camera session running alongside
-                // two decoders that killed the process, not the readback itself.
-                // If Compare ever starts dying again, this is the first thing to
-                // put back to surface_view.
-                //
-                // Only read panes that hold a swing - each grab is a GPU to CPU
-                // copy and two of them can starve the encoder.
-                if (paneA?.loaded == true) {
-                    drawTextureView(c, paneA?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
-                }
-                if (paneB?.loaded == true) {
-                    drawTextureView(c, paneB?.pv?.videoSurfaceView as? TextureView, scale, root[0], root[1])
+                // The compare panes are SurfaceViews, deliberately: TextureView
+                // put them through the GPU as textures and that, on top of a live
+                // camera session, was killing the process on Rich's tablet. A
+                // SurfaceView's pixels cannot be read back, so the swings
+                // themselves cannot go into a lesson. Voice and drawn lines still
+                // do, and we say so rather than quietly handing back black video.
+                if (!lessonCompareWarned) {
+                    lessonCompareWarned = true
+                    Toast.makeText(
+                        this,
+                        "Compare video is not recorded - your voice and lines are",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
                 drawOverlayAt(c, overlayA, scale, root[0], root[1])
                 drawOverlayAt(c, overlayB, scale, root[0], root[1])
