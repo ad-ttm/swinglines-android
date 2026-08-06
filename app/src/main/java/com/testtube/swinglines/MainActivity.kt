@@ -269,19 +269,31 @@ class MainActivity : ComponentActivity(), SensorEventListener {
      */
     private fun offerCrashReport() {
         val report = CrashReporter.pendingReport(this) ?: return
-        CrashReporter.clear(this)
+        // NOTE: the report is deliberately NOT cleared here. It used to be wiped
+        // before the dialog was even shown, so one "Not now", one stray tap
+        // outside the dialog or one failed share sheet destroyed the only copy,
+        // and every launch afterwards had nothing left to offer. It now survives
+        // until it has actually been sent.
         AlertDialog.Builder(this)
             .setTitle("SeePath closed unexpectedly last time")
-            .setMessage("Sending this to Ad will show exactly what went wrong. Nothing personal is in it, just what the app was doing.")
-            .setPositiveButton("Send report") { _, _ ->
-                val i = Intent(Intent.ACTION_SEND)
-                i.type = "text/plain"
-                i.putExtra(Intent.EXTRA_SUBJECT, "SeePath crash report")
-                i.putExtra(Intent.EXTRA_TEXT, report)
-                startActivity(Intent.createChooser(i, "Send crash report"))
-            }
+            .setMessage("Sending this to Ad will show exactly what went wrong. Nothing personal is in it, just what the app was doing.\n\nIf you miss this, it stays available under the gear icon.")
+            .setPositiveButton("Send report") { _, _ -> sendReport(report, clearAfter = true) }
             .setNegativeButton("Not now", null)
             .show()
+    }
+
+    /** Share a report as plain text, and only forget it once it has gone. */
+    private fun sendReport(report: String, clearAfter: Boolean) {
+        val i = Intent(Intent.ACTION_SEND)
+        i.type = "text/plain"
+        i.putExtra(Intent.EXTRA_SUBJECT, "SeePath report")
+        i.putExtra(Intent.EXTRA_TEXT, report)
+        try {
+            startActivity(Intent.createChooser(i, "Send report"))
+            if (clearAfter) CrashReporter.clear(this)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Couldn't open the share sheet: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onPause() {
@@ -2177,6 +2189,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 applyFeaturePrefs()
             }
             .setPositiveButton("Done", null)
+            // always reachable, so getting a report out never depends on catching
+            // a popup at the right moment
+            .setNeutralButton(
+                if (CrashReporter.pendingReport(this) != null) "Send crash report" else "Send status to Ad"
+            ) { _, _ ->
+                val pending = CrashReporter.pendingReport(this)
+                sendReport(pending ?: CrashReporter.snapshot(this), clearAfter = pending != null)
+            }
             .show()
     }
 

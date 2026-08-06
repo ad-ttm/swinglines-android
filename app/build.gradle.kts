@@ -11,8 +11,8 @@ android {
         applicationId = "com.testtube.swinglines"
         minSdk = 29
         targetSdk = 34
-        versionCode = 31
-        versionName = "0.14.6"
+        versionCode = 32
+        versionName = "0.14.7"
     }
 
     // Shared test-signing key so every CI build signs identically and installs

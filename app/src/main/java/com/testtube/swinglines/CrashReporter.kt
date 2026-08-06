@@ -142,6 +142,21 @@ object CrashReporter {
         return null
     }
 
+    /**
+     * A report when nothing has crashed: still worth sending, because it says
+     * which build is actually on the phone, what the device is, how much memory
+     * it has, and what the coach was doing.
+     */
+    fun snapshot(ctx: Context): String {
+        return buildString {
+            append(header(ctx, "STATUS"))
+            append("No crash is stored on this phone right now.\n")
+            append("If Compare died but this says no crash, the app was killed\n")
+            append("outright rather than throwing an error we can catch.\n\n")
+            append(breadcrumbs())
+        }
+    }
+
     fun clear(ctx: Context) {
         try {
             File(ctx.filesDir, CRASH_FILE).delete()
