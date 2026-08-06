@@ -256,6 +256,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        CrashReporter.crumb("app resumed")
         if (previewTexture.isAvailable) maybeOpenCamera()
         sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
@@ -284,8 +285,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     override fun onPause() {
-        // a normal backgrounding is not a crash, so retire the marker
-        CrashReporter.clearMark(this)
+        // Do NOT clear the marker here. Importing a swing from the camera roll
+        // opens the system photo picker, which pauses this activity, so clearing
+        // on pause wiped the marker during the exact flow that crashes. A stale
+        // marker producing a spurious report is cheap; a missed crash is not.
+        CrashReporter.crumb("app backgrounded (picker, home or lock)")
         sensorManager?.unregisterListener(this)
         if (recording) stopRecording(openReplay = false)
         closeCamera()
@@ -1833,6 +1837,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         fun load(uri: Uri) {
             CrashReporter.crumb("compare pane loading: " + clipSpec(uri))
+            CrashReporter.remark(this@MainActivity)
             fps = clipFps(uri)
             posMs = 0.0
             val p = ensure()
@@ -2049,6 +2054,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .setItems(labels) { _, which ->
                 val (_, uri) = rows[which]
                 if (uri == null) {
+                    CrashReporter.crumb("opening camera roll picker")
+                    CrashReporter.remark(this)
                     pendingPick = cb
                     importLauncher.launch(
                         androidx.activity.result.PickVisualMediaRequest(

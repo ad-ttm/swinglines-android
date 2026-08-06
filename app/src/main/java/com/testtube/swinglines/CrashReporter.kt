@@ -33,6 +33,10 @@ object CrashReporter {
 
     private val crumbs = ArrayDeque<String>()
     private var startedAt = 0L
+    /** device and version line, built once at startup so the crash path, which
+     *  may be running out of memory, does not have to allocate to produce it */
+    private var staticHeader = ""
+    private var markedScreen: String? = null
 
     /** Short note of what the coach was doing, kept in memory and dumped on crash. */
     @Synchronized
@@ -45,19 +49,34 @@ object CrashReporter {
     fun install(ctx: Context) {
         startedAt = android.os.SystemClock.elapsedRealtime()
         val app = ctx.applicationContext
+        staticHeader = try {
+            val version = app.packageManager.getPackageInfo(app.packageName, 0).versionName
+            "app v$version\n${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n"
+        } catch (_: Throwable) {
+            "app version unknown\n"
+        }
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            // Written in stages, cheapest first. If this is an OutOfMemoryError
+            // then building a big report is exactly what will fail, so get the
+            // essentials on disk before attempting the stack trace.
+            val f = File(app.filesDir, CRASH_FILE)
+            try {
+                f.writeText(
+                    "SeePath CRASH report\n" + staticHeader +
+                        "Thread: ${thread.name}\n" +
+                        "Error: ${error.javaClass.name}: ${error.message}\n\n"
+                )
+            } catch (_: Throwable) {
+            }
+            try {
+                f.appendText(breadcrumbs())
+            } catch (_: Throwable) {
+            }
             try {
                 val sw = StringWriter()
                 error.printStackTrace(PrintWriter(sw))
-                val body = buildString {
-                    append(header(app, "CRASH"))
-                    append("Thread: ${thread.name}\n\n")
-                    append(breadcrumbs())
-                    append("\n")
-                    append(sw.toString())
-                }
-                File(app.filesDir, CRASH_FILE).writeText(body)
+                f.appendText("\n" + sw.toString())
             } catch (_: Throwable) {
             }
             // let the system do what it would have done, so the process still dies
@@ -67,15 +86,31 @@ object CrashReporter {
 
     /** Call when entering a screen we suspect. Context is included in the report. */
     fun mark(ctx: Context, what: String) {
+        markedScreen = what
+        crumb("entered $what")
+        remark(ctx)
+    }
+
+    /**
+     * Rewrite the marker with the latest breadcrumbs. Call at each meaningful
+     * step while a marked screen is open, so the file on disk always reflects
+     * how far the coach actually got before the process died.
+     */
+    fun remark(ctx: Context) {
+        val what = markedScreen ?: return
         try {
-            crumb("entered $what")
             File(ctx.filesDir, MARKER_FILE).writeText("$what\n" + header(ctx, "MARK") + breadcrumbs())
         } catch (_: Throwable) {
         }
     }
 
-    /** Call when that screen closes cleanly, or the app is backgrounded normally. */
+    /**
+     * Call ONLY when that screen closes cleanly. Deliberately not called from
+     * onPause: the camera roll picker pauses the activity, and clearing there
+     * wiped the marker during the very flow being investigated.
+     */
     fun clearMark(ctx: Context) {
+        markedScreen = null
         try {
             File(ctx.filesDir, MARKER_FILE).delete()
         } catch (_: Throwable) {
@@ -116,11 +151,6 @@ object CrashReporter {
     }
 
     private fun header(ctx: Context, kind: String): String {
-        val version = try {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
-        } catch (_: Throwable) {
-            "?"
-        }
         val rt = Runtime.getRuntime()
         val usedMb = (rt.totalMemory() - rt.freeMemory()) / 1048576
         val maxMb = rt.maxMemory() / 1048576
@@ -132,12 +162,8 @@ object CrashReporter {
         } catch (_: Throwable) {
             "system memory unknown"
         }
-        return buildString {
-            append("SeePath $kind report\n")
-            append("app v$version\n")
-            append("${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n")
-            append("app heap ${usedMb}MB used of ${maxMb}MB, $sys\n\n")
-        }
+        return "SeePath $kind report\n" + staticHeader +
+            "app heap ${usedMb}MB used of ${maxMb}MB, $sys\n\n"
     }
 
     @Synchronized
