@@ -38,6 +38,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -1741,7 +1742,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         back: Button,
         fwd: Button,
         jog: JogStrip,
-        start: Button
+        start: Button,
+        val still: ImageView
     ) {
         var player: ExoPlayer? = null
         var fps = 30
@@ -1749,21 +1751,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         /** true once a swing has been chosen for this half, so the lesson
          *  capture can skip the expensive readback on an empty pane */
         var loaded = false
+        /** true when this half holds the one video decoder we are allowed.
+         *  The other half shows a still frame. See claimCompareDecoder. */
+        var live = false
+        /** kept so the still frame can be pulled once the decoder is gone */
+        var clipUri: Uri? = null
         private var lastSeekAt = 0L
         private var seekQueued = false
 
         init {
             choose.setOnClickListener { pickClip { uri -> load(uri) } }
             pp.setOnClickListener {
+                claimCompareDecoder(this)
                 val p = player ?: return@setOnClickListener
                 if (p.isPlaying) { p.pause(); posMs = p.currentPosition.toDouble() }
                 else { if (p.playbackState == Player.STATE_ENDED) p.seekTo(0); p.play() }
             }
-            back.setOnClickListener { step(-1) }
-            fwd.setOnClickListener { step(1) }
-            attachHoldRepeat(back) { step(-1) }
-            attachHoldRepeat(fwd) { step(1) }
+            back.setOnClickListener { claimCompareDecoder(this); step(-1) }
+            fwd.setOnClickListener { claimCompareDecoder(this); step(1) }
+            attachHoldRepeat(back) { claimCompareDecoder(this); step(-1) }
+            attachHoldRepeat(fwd) { claimCompareDecoder(this); step(1) }
             start.setOnClickListener {
+                claimCompareDecoder(this)
                 val p = player ?: return@setOnClickListener
                 p.pause()
                 posMs = 0.0
@@ -1783,6 +1792,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
 
                 override fun onStartTrackingTouch(sb: SeekBar) {
+                    claimCompareDecoder(this@CmpPane)
                     player?.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                 }
 
@@ -1795,6 +1805,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // same jog wheel as the replay screen, per pane
             jog.onGrabbed = {
                 CrashReporter.crumb("compare jog grabbed")
+                claimCompareDecoder(this)
                 val p = player
                 if (p != null && p.isPlaying) {
                     p.pause()
@@ -1850,8 +1861,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         fun load(uri: Uri) {
             CrashReporter.crumb("compare pane loading: " + clipSpec(uri))
             CrashReporter.remark(this@MainActivity)
+            clipUri = uri
             fps = clipFps(uri)
             posMs = 0.0
+            // Take the decoder BEFORE creating ours. Two live decoders is what
+            // killed the process the instant a second swing was opened: SeePath
+            // records 1080p at 240fps and no phone will decode two of those at
+            // once. The other half freezes on a still frame instead.
+            claimCompareDecoder(this)
             val p = ensure()
             p.setMediaItem(MediaItem.fromUri(uri))
             p.prepare()
@@ -1859,6 +1876,53 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             p.playWhenReady = false
             choose.visibility = View.GONE
             loaded = true
+        }
+
+        /**
+         * Attach or detach this half's video surface. Detaching releases the
+         * hardware decoder, which is the entire point: the phone will only give
+         * us one at these frame rates. A still frame stands in while detached so
+         * the coach still sees the position he parked on.
+         */
+        fun setLive(want: Boolean) {
+            if (live == want) return
+            live = want
+            if (want) {
+                still.visibility = View.GONE
+                still.setImageDrawable(null)
+                player?.let { pv.player = it }
+            } else {
+                val p = player
+                if (p != null) {
+                    posMs = p.currentPosition.toDouble()
+                    p.pause()
+                }
+                // release the decoder first, fill the still in afterwards
+                pv.player = null
+                loadStill()
+            }
+        }
+
+        private fun loadStill() {
+            val u = clipUri ?: return
+            val atUs = (posMs * 1000).toLong()
+            Thread {
+                var bmp: android.graphics.Bitmap? = null
+                try {
+                    val mmr = android.media.MediaMetadataRetriever()
+                    mmr.setDataSource(this@MainActivity, u)
+                    bmp = mmr.getFrameAtTime(atUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST)
+                    mmr.release()
+                } catch (_: Exception) {
+                }
+                val out = bmp
+                runOnUiThread {
+                    if (!live && out != null) {
+                        still.setImageBitmap(out)
+                        still.visibility = View.VISIBLE
+                    }
+                }
+            }.start()
         }
 
         fun step(dir: Int) {
@@ -1884,8 +1948,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         fun releaseAll() {
+            pv.player = null
             player?.release()
             player = null
+            live = false
+            clipUri = null
+            still.setImageDrawable(null)
+            still.visibility = View.GONE
             choose.visibility = View.VISIBLE
             loaded = false
         }
@@ -1897,6 +1966,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var overlayB: OverlayView
     private var lastCmpOverlay: OverlayView? = null
     private var cmpSpeed = 1.0f
+    private var compareHandoverExplained = false
 
     private fun setCmpTool(tool: String) {
         overlayA.tool = tool
@@ -1923,17 +1993,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             findViewById(R.id.playerA), findViewById(R.id.chooseA),
             findViewById(R.id.ppA), findViewById(R.id.seekA),
             findViewById(R.id.backA), findViewById(R.id.fwdA),
-            findViewById(R.id.jogA), findViewById(R.id.startA)
+            findViewById(R.id.jogA), findViewById(R.id.startA),
+            findViewById(R.id.stillA)
         )
         paneB = CmpPane(
             findViewById(R.id.playerB), findViewById(R.id.chooseB),
             findViewById(R.id.ppB), findViewById(R.id.seekB),
             findViewById(R.id.backB), findViewById(R.id.fwdB),
-            findViewById(R.id.jogB), findViewById(R.id.startB)
+            findViewById(R.id.jogB), findViewById(R.id.startB),
+            findViewById(R.id.stillB)
         )
         findViewById<Button>(R.id.cmpPlayBoth).setOnClickListener {
-            paneA?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
-            paneB?.player?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
+            // Only the half holding the decoder can play. Running both at once
+            // is precisely what was killing the app.
+            val p = (if (paneA?.live == true) paneA else paneB)?.player
+            p?.let { if (it.playbackState == Player.STATE_ENDED) it.seekTo(0); it.play() }
         }
         findViewById<Button>(R.id.cmpPauseBoth).setOnClickListener {
             paneA?.player?.pause()
@@ -1963,6 +2037,29 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnCompare).setOnClickListener { openCompare() }
         // undo any stale hidden state from when Compare was a hideable feature
         findViewById<Button>(R.id.btnCompare).visibility = View.VISIBLE
+    }
+
+    /**
+     * Exactly one compare half may hold a video decoder. The app was being
+     * killed outright - no error, straight back to the home screen - the moment
+     * a second swing opened, because two 1080p 240fps decoders is past what the
+     * phone's video hardware will give us. Whichever half the coach touches
+     * takes the decoder; the other holds a still frame of where it was.
+     */
+    private fun claimCompareDecoder(pane: CmpPane) {
+        val other = if (pane === paneA) paneB else paneA
+        if (other?.live == true) {
+            other.setLive(false)
+            if (!compareHandoverExplained) {
+                compareHandoverExplained = true
+                Toast.makeText(
+                    this,
+                    "The other swing holds its position - tap it to make it live",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        pane.setLive(true)
     }
 
     private fun setCmpSpeed(s: Float) {

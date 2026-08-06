@@ -309,6 +309,14 @@
                 app:use_controller="false"
                 app:resize_mode="fit" />
 
+            <ImageView
+                android:id="@+id/stillA"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:contentDescription="@string/compare"
+                android:visibility="gone" />
+
             <com.testtube.swinglines.OverlayView
                 android:id="@+id/overlayA"
                 android:layout_width="match_parent"
@@ -365,6 +373,14 @@
                 android:layout_height="match_parent"
                 app:use_controller="false"
                 app:resize_mode="fit" />
+
+            <ImageView
+                android:id="@+id/stillB"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:contentDescription="@string/compare"
+                android:visibility="gone" />
 
             <com.testtube.swinglines.OverlayView
                 android:id="@+id/overlayB"
