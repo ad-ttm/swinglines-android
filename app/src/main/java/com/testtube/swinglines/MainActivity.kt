@@ -210,7 +210,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
         setContentView(R.layout.activity_main)
+        mainHandler.post { offerCrashReport() }
 
         previewTexture = findViewById(R.id.previewTexture)
         overlay = findViewById(R.id.overlay)
@@ -260,7 +262,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    /**
+     * If the app died last time, hand the coach a share sheet with the report in
+     * it. Plain text rather than a file, so it goes straight into WhatsApp.
+     */
+    private fun offerCrashReport() {
+        val report = CrashReporter.pendingReport(this) ?: return
+        CrashReporter.clear(this)
+        AlertDialog.Builder(this)
+            .setTitle("SeePath closed unexpectedly last time")
+            .setMessage("Sending this to Ad will show exactly what went wrong. Nothing personal is in it, just what the app was doing.")
+            .setPositiveButton("Send report") { _, _ ->
+                val i = Intent(Intent.ACTION_SEND)
+                i.type = "text/plain"
+                i.putExtra(Intent.EXTRA_SUBJECT, "SeePath crash report")
+                i.putExtra(Intent.EXTRA_TEXT, report)
+                startActivity(Intent.createChooser(i, "Send crash report"))
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
     override fun onPause() {
+        // a normal backgrounding is not a crash, so retire the marker
+        CrashReporter.clearMark(this)
         sensorManager?.unregisterListener(this)
         if (recording) stopRecording(openReplay = false)
         closeCamera()
@@ -784,6 +809,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun openReview(uri: Uri, fps: Int) {
+        CrashReporter.crumb("replay opened, ${fps}fps")
         reviewUri = uri
         reviewFps = fps
         reviewSpeed = if (fps > 60) 0.25f else 1.0f
@@ -1348,6 +1374,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun startLesson() {
         if (lessonRecording) return
+        CrashReporter.crumb("lesson recording starting")
         val sw = overlay.width
         val sh = overlay.height
         if (sw <= 0 || sh <= 0) return
@@ -1751,6 +1778,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             })
             // same jog wheel as the replay screen, per pane
             jog.onGrabbed = {
+                CrashReporter.crumb("compare jog grabbed")
                 val p = player
                 if (p != null && p.isPlaying) {
                     p.pause()
@@ -1804,6 +1832,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         fun load(uri: Uri) {
+            CrashReporter.crumb("compare pane loading: " + clipSpec(uri))
             fps = clipFps(uri)
             posMs = 0.0
             val p = ensure()
@@ -1940,6 +1969,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         comparePanel.visibility = View.VISIBLE
         // free the camera before the two decoders start competing for resources
         closeCamera()
+        CrashReporter.mark(this, "Compare")
         mainHandler.removeCallbacks(cmpPoll)
         mainHandler.post(cmpPoll)
     }
@@ -1949,10 +1979,36 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         paneA?.releaseAll()
         paneB?.releaseAll()
         comparePanel.visibility = View.GONE
+        CrashReporter.clearMark(this)
         restoreCameraIfLive()
     }
 
     /** Frame rate of an arbitrary clip, for true frame stepping. */
+    /**
+     * One line describing what a clip actually is, for crash reports. The open
+     * question on the Compare crash is whether the coach is comparing SeePath's
+     * own 1080p clips or 4K/8K HDR footage out of the Samsung camera roll, and
+     * those are very different things to decode two of at once.
+     */
+    private fun clipSpec(uri: Uri): String {
+        return try {
+            val mmr = android.media.MediaMetadataRetriever()
+            mmr.setDataSource(this, uri)
+            fun m(k: Int) = mmr.extractMetadata(k)
+            val w = m(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            val h = m(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            val dur = m(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            val cap = m(android.media.MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
+            val mime = m(android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+            val bitrate = m(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: 0L
+            mmr.release()
+            val mb = bitrate / 1_000_000.0
+            "${w}x$h ${mime ?: "?"} capture=${cap ?: "?"}fps ${dur / 1000}s ${"%.1f".format(mb)}Mbps"
+        } catch (e: Exception) {
+            "unreadable (${e.message})"
+        }
+    }
+
     private fun clipFps(uri: Uri): Int {
         var fps = 30
         try {
