@@ -73,6 +73,9 @@ jobs:
           path: SeePath-*.apk
 
       - name: Publish release (phone-friendly download link)
+        # main only, so a branch can be compile-checked before it reaches main
+        # without publishing a release the coach might pick up
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}

@@ -1896,15 +1896,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (want) {
                 still.visibility = View.GONE
                 still.setImageDrawable(null)
-                player?.let { pv.player = it }
+                val u = clipUri
+                if (player == null && u != null) {
+                    // rebuilt from scratch: the player was released outright when
+                    // this half gave up the decoder, so restore it at the frame
+                    // the coach left it on
+                    val p = ensure()
+                    p.setMediaItem(MediaItem.fromUri(u))
+                    p.prepare()
+                    p.setPlaybackSpeed(cmpSpeed)
+                    p.playWhenReady = false
+                    p.seekTo(posMs.roundToLong())
+                } else {
+                    player?.let { pv.player = it }
+                }
             } else {
                 val p = player
                 if (p != null) {
                     posMs = p.currentPosition.toDouble()
                     p.pause()
                 }
-                // release the decoder first, fill the still in afterwards
+                // Detaching the surface is NOT enough. ExoPlayer keeps its video
+                // decoder allocated when you only clear the surface, so both
+                // halves were still holding hardware decoders and the earlier
+                // fix changed nothing. Releasing the player is the only thing
+                // that definitely gives the decoder back.
                 pv.player = null
+                p?.release()
+                player = null
                 loadStill()
             }
         }
@@ -1917,7 +1936,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 try {
                     val mmr = android.media.MediaMetadataRetriever()
                     mmr.setDataSource(this@MainActivity, u)
-                    bmp = mmr.getFrameAtTime(atUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST)
+                    val vw = mmr.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+                    )?.toIntOrNull() ?: 0
+                    val vh = mmr.extractMetadata(
+                        android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+                    )?.toIntOrNull() ?: 0
+                    bmp = if (vw > 0 && vh > 0) {
+                        val k = kotlin.math.min(1f, 1280f / kotlin.math.max(vw, vh))
+                        mmr.getScaledFrameAtTime(
+                            atUs,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST,
+                            (vw * k).toInt().coerceAtLeast(2),
+                            (vh * k).toInt().coerceAtLeast(2)
+                        )
+                    } else {
+                        mmr.getFrameAtTime(atUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST)
+                    }
                     mmr.release()
                 } catch (_: Exception) {
                 }
