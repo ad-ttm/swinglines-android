@@ -1184,14 +1184,25 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var studentChips: LinearLayout
     private var clipsFilter: String? = null // null = everyone
     private var clipsAdapter: ClipsAdapter? = null
-    private val thumbCache = android.util.LruCache<String, android.graphics.Bitmap>(48)
+    // Bounded by MEMORY, not by number of entries. The previous version passed
+    // 48 as the size, which LruCache treats as a count of items unless sizeOf is
+    // overridden, so it happily held 48 whole bitmaps. That was the bulk of the
+    // 256MB heap the app was dying on.
+    private val thumbCache = object : android.util.LruCache<String, android.graphics.Bitmap>(
+        ((Runtime.getRuntime().maxMemory() / 1024) / 12).toInt().coerceIn(2048, 16384)
+    ) {
+        override fun sizeOf(key: String, value: android.graphics.Bitmap): Int = value.byteCount / 1024
+    }
     private val thumbPool = java.util.concurrent.Executors.newFixedThreadPool(2)
 
     private fun setupClipsPanel() {
         clipsPanel = findViewById(R.id.clipsPanel)
         clipsGrid = findViewById(R.id.clipsGrid)
         studentChips = findViewById(R.id.studentChips)
-        findViewById<Button>(R.id.clipsClose).setOnClickListener { clipsPanel.visibility = View.GONE }
+        findViewById<Button>(R.id.clipsClose).setOnClickListener {
+            clipsPanel.visibility = View.GONE
+            thumbCache.evictAll()
+        }
         findViewById<Button>(R.id.clipsImport).setOnClickListener {
             importLauncher.launch(
                 androidx.activity.result.PickVisualMediaRequest(
@@ -1300,7 +1311,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 img.setImageDrawable(null)
                 thumbPool.execute {
                     try {
-                        val bmp = contentResolver.loadThumbnail(row.uri, android.util.Size(320, 568), null)
+                        val bmp = contentResolver.loadThumbnail(row.uri, android.util.Size(240, 426), null)
                         thumbCache.put(key, bmp)
                         runOnUiThread { if (img.tag == key) img.setImageBitmap(bmp) }
                     } catch (_: Exception) {
@@ -1851,7 +1862,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         fun ensure(): ExoPlayer {
             player?.let { return it }
-            val p = ExoPlayer.Builder(this@MainActivity).build()
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(1_000, 3_000, 500, 1_000)
+                .setTargetBufferBytes(4 * 1024 * 1024)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build()
+            val p = ExoPlayer.Builder(this@MainActivity)
+                .setLoadControl(loadControl)
+                .build()
             p.setSeekParameters(SeekParameters.EXACT)
             p.repeatMode = Player.REPEAT_MODE_ONE // loop, same as the replay screen
             p.addListener(object : Player.Listener {
@@ -2124,9 +2142,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         comparePanel.visibility = View.VISIBLE
         // free the camera before the compare decoder starts
         closeCamera()
-        // and make certain the replay has given its decoder back too, so the
-        // only one alive on this screen is the one Compare is about to take
+        // Go in with as much heap as possible. Compare is where the app was
+        // running out of memory, and both of these were still holding on to it.
+        thumbCache.evictAll()
         playerView.player = null
+        player?.release()
+        player = null
         CrashReporter.mark(this, "Compare")
         mainHandler.removeCallbacks(cmpPoll)
         mainHandler.post(cmpPoll)
