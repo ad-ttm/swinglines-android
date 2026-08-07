@@ -1754,8 +1754,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
          *  capture can skip the expensive readback on an empty pane */
         var loaded = false
         /** true when this half holds the one video decoder we are allowed.
-         *  The other half shows a still frame. See claimCompareDecoder. */
+         *  The other half shows a still frame. See claimCompareDecoder.
+         *  Read only from outside; use setDecoderLive to change it. The setter
+         *  is named that way because a function called setLive would collide
+         *  with this property's own generated JVM setter. */
         var live = false
+            private set
         /** kept so the still frame can be pulled once the decoder is gone */
         var clipUri: Uri? = null
         private var lastSeekAt = 0L
@@ -1886,7 +1890,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
          * us one at these frame rates. A still frame stands in while detached so
          * the coach still sees the position he parked on.
          */
-        fun setLive(want: Boolean) {
+        fun setDecoderLive(want: Boolean) {
             if (live == want) return
             live = want
             if (want) {
@@ -2051,7 +2055,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun claimCompareDecoder(pane: CmpPane) {
         val other = if (pane === paneA) paneB else paneA
         if (other?.live == true) {
-            other.setLive(false)
+            other.setDecoderLive(false)
             if (!compareHandoverExplained) {
                 compareHandoverExplained = true
                 Toast.makeText(
@@ -2061,7 +2065,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 ).show()
             }
         }
-        pane.setLive(true)
+        pane.setDecoderLive(true)
     }
 
     private fun setCmpSpeed(s: Float) {
