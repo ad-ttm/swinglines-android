@@ -684,7 +684,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
        ================================================================ */
 
     private fun ensurePlayer(): ExoPlayer {
-        player?.let { return it }
+        // always re-attach: the view is deliberately detached when Compare opens,
+        // so returning early without re-attaching would leave the replay blank
+        player?.let { playerView.player = it; return it }
         val p = ExoPlayer.Builder(this).build()
         p.setSeekParameters(SeekParameters.EXACT)
         p.repeatMode = Player.REPEAT_MODE_ONE // replays loop: end rolls back to the start
@@ -2081,8 +2083,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         overlayA.drawColor = overlay.drawColor
         overlayB.drawColor = overlay.drawColor
         comparePanel.visibility = View.VISIBLE
-        // free the camera before the two decoders start competing for resources
+        // free the camera before the compare decoder starts
         closeCamera()
+        // and make certain the replay has given its decoder back too, so the
+        // only one alive on this screen is the one Compare is about to take
+        playerView.player = null
         CrashReporter.mark(this, "Compare")
         mainHandler.removeCallbacks(cmpPoll)
         mainHandler.post(cmpPoll)
