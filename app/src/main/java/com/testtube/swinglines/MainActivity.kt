@@ -1362,7 +1362,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var lessonStartNs = 0L
     private var lessonFrameBusy = false
     private var lessonStopping = false
-    private var lessonCompareWarned = false
     private var lessonFrames = 0
     private val MIN_LESSON_MS = 1500L
     private val lessonPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
@@ -1444,10 +1443,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
             lessonFrame = android.graphics.Bitmap.createBitmap(outW, outH, android.graphics.Bitmap.Config.ARGB_8888)
             lessonGrabs.clear()
+            releasePaneCopies()
             lessonFrameBusy = false
             lessonFrames = 0
             lessonStopping = false
-            lessonCompareWarned = false
             val gl = GlBitmapRecorder(outW, outH)
             lessonGl = gl
             gl.start(rec.surface) { ok ->
@@ -1513,7 +1512,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     /** Draw an overlay layer at its on-screen position within the capture frame. */
     private fun drawOverlayAt(
         c: android.graphics.Canvas,
-        ov: OverlayView,
+        ov: View,
         scale: Float,
         rootX: Int,
         rootY: Int
@@ -1526,6 +1525,71 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         c.scale(scale, scale)
         try { ov.draw(c) } catch (_: Exception) {}
         c.restore()
+    }
+
+    private val paneReady = HashMap<android.view.SurfaceView, android.graphics.Bitmap>()
+    private val paneScratch = HashMap<android.view.SurfaceView, android.graphics.Bitmap>()
+    private val paneCopyPending = HashMap<android.view.SurfaceView, Boolean>()
+
+    /**
+     * Draw a SurfaceView's contents into the lesson frame using PixelCopy.
+     * Draws the most recently completed copy and requests the next one, so the
+     * recording lags the screen by a frame at most.
+     */
+    private fun drawSurfaceView(
+        c: android.graphics.Canvas,
+        sv: android.view.SurfaceView?,
+        scale: Float,
+        rootX: Int,
+        rootY: Int
+    ) {
+        if (sv == null || sv.width <= 0 || sv.height <= 0) return
+        val loc = IntArray(2)
+        sv.getLocationInWindow(loc)
+        val dx = (loc[0] - rootX) * scale
+        val dy = (loc[1] - rootY) * scale
+        paneReady[sv]?.let { bmp ->
+            val dst = android.graphics.RectF(dx, dy, dx + sv.width * scale, dy + sv.height * scale)
+            c.drawBitmap(bmp, null, dst, lessonPaint)
+        }
+        if (paneCopyPending[sv] == true) return
+        val surface = sv.holder?.surface
+        if (surface == null || !surface.isValid) return
+        // copy at output resolution, not screen resolution
+        val cw = (sv.width * scale).toInt().coerceAtLeast(2)
+        val ch = (sv.height * scale).toInt().coerceAtLeast(2)
+        var target = paneScratch[sv]
+        if (target == null || target.width != cw || target.height != ch) {
+            target?.recycle()
+            target = android.graphics.Bitmap.createBitmap(cw, ch, android.graphics.Bitmap.Config.ARGB_8888)
+            paneScratch[sv] = target
+        }
+        val dest = target
+        paneCopyPending[sv] = true
+        try {
+            android.view.PixelCopy.request(sv, dest, { result ->
+                paneCopyPending[sv] = false
+                if (result == android.view.PixelCopy.SUCCESS) {
+                    // swap: what we just filled becomes what we draw, and the
+                    // bitmap it replaces becomes the next scratch buffer. On the
+                    // first copy there is nothing to hand back, so drop the
+                    // scratch entry rather than storing a null in a map typed
+                    // non-null and re-checking it every frame.
+                    val previous = paneReady.put(sv, dest)
+                    if (previous != null) paneScratch[sv] = previous else paneScratch.remove(sv)
+                }
+            }, mainHandler)
+        } catch (_: Exception) {
+            paneCopyPending[sv] = false
+        }
+    }
+
+    private fun releasePaneCopies() {
+        for (b in paneReady.values) try { b.recycle() } catch (_: Exception) {}
+        for (b in paneScratch.values) try { b.recycle() } catch (_: Exception) {}
+        paneReady.clear()
+        paneScratch.clear()
+        paneCopyPending.clear()
     }
 
     /** Compose one frame of whatever screen the coach is on - live camera,
@@ -1542,19 +1606,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         c.drawColor(Color.BLACK)
         when {
             comparePanel.visibility == View.VISIBLE -> {
-                // The compare panes are SurfaceViews, deliberately: TextureView
-                // put them through the GPU as textures and that, on top of a live
-                // camera session, was killing the process on Rich's tablet. A
-                // SurfaceView's pixels cannot be read back, so the swings
-                // themselves cannot go into a lesson. Voice and drawn lines still
-                // do, and we say so rather than quietly handing back black video.
-                if (!lessonCompareWarned) {
-                    lessonCompareWarned = true
-                    Toast.makeText(
-                        this,
-                        "Compare video is not recorded - your voice and lines are",
-                        Toast.LENGTH_LONG
-                    ).show()
+                // The panes stay SurfaceViews, which is what keeps Compare
+                // stable. Their pixels are read back with PixelCopy, which is
+                // built for exactly this. The frozen half has no video running,
+                // so its still image is drawn as an ordinary view.
+                for (pane in listOf(paneA, paneB)) {
+                    if (pane == null) continue
+                    if (pane.live) {
+                        drawSurfaceView(
+                            c, pane.pv.videoSurfaceView as? android.view.SurfaceView,
+                            scale, root[0], root[1]
+                        )
+                    } else if (pane.still.visibility == View.VISIBLE) {
+                        drawOverlayAt(c, pane.still, scale, root[0], root[1])
+                    }
                 }
                 drawOverlayAt(c, overlayA, scale, root[0], root[1])
                 drawOverlayAt(c, overlayB, scale, root[0], root[1])
@@ -1647,6 +1712,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         lessonUri = null
         lessonFrame = null
         lessonGrabs.clear()
+        releasePaneCopies()
         if (uri != null) {
             try {
                 if (ok) {
@@ -1679,6 +1745,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         lessonUri = null
         lessonFrame = null
         lessonGrabs.clear()
+        releasePaneCopies()
     }
 
     /* ================================================================
