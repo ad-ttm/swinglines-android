@@ -110,6 +110,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var reviewFps = 30
     private var reviewSpeed = 0.25f
     private var reviewPosMs = 0.0
+    // A coach leaves the camera running through a whole bucket of balls, so the
+    // swing he wants is the last one, not the first. Set while a clip is being
+    // prepared; the duration is not known until the player reports READY.
+    private var openAtEnd = false
     // dimensions of the recorded frame as displayed (after rotation), used to
     // re-map live-view lines onto the letterboxed replay
     private var recordedFrameW = 1080f
@@ -132,27 +136,52 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    /* ---------- throttled, coalesced seeking (spec: never more than one seek
-       in flight, at most ~30 per second; always land on the LATEST target) ---------- */
+    /* ---------- decoder-paced, coalesced seeking ----------
+       The previous version fired a seek every 33ms on a timer, whether or not
+       the last one had finished. An EXACT seek at 240fps decodes from the
+       preceding keyframe, up to 240 frames, which takes far longer than 33ms,
+       so requests piled up and the picture fell steadily behind the finger.
+       That is what made scrubbing feel slow, and what made the jog strip feel
+       like it was hitting stops rather than rolling on.
+
+       The player's own state now sets the pace. While it is BUFFERING it is
+       still working on the last seek, so we hold off and keep only the newest
+       target; the moment it is ready we seek to wherever the finger has got to.
+       Everything in between is dropped. The pump always reposts, so a state
+       change we never see cannot wedge the control. */
     private var lastSeekAt = 0L
     private var seekQueued = false
+    private val seekPump = Runnable {
+        seekQueued = false
+        requestSeek()
+    }
 
     private fun requestSeek() {
+        val p = player ?: return
         val now = android.os.SystemClock.uptimeMillis()
-        val since = now - lastSeekAt
-        if (since >= 33) {
+        val stillWorking = p.playbackState == Player.STATE_BUFFERING
+        if (!stillWorking && now - lastSeekAt >= 16) {
             lastSeekAt = now
-            player?.seekTo(reviewPosMs.roundToLong())
+            p.seekTo(reviewPosMs.roundToLong())
         } else if (!seekQueued) {
             seekQueued = true
-            mainHandler.postDelayed({
-                seekQueued = false
-                lastSeekAt = android.os.SystemClock.uptimeMillis()
-                player?.seekTo(reviewPosMs.roundToLong())
-            }, 33 - since)
+            mainHandler.postDelayed(seekPump, 16)
         }
-        // if a seek is already queued, do nothing: it will pick up the latest
-        // reviewPosMs when it fires - everything in between is dropped
+    }
+
+    /* The coarse bar seeks to keyframes while the finger is moving, which is
+       cheap, but MediaRecorder writes only about one keyframe per second. On a
+       four second 240fps swing that is roughly four positions across the whole
+       bar, which is why dragging it never felt like scrubbing. This settles
+       onto the real frame as soon as the finger stops moving, so pausing
+       anywhere on the bar shows the frame that is actually there. */
+    private val coarseSettle = Runnable {
+        val p = player
+        if (p != null) {
+            p.setSeekParameters(SeekParameters.EXACT)
+            p.seekTo(reviewPosMs.roundToLong())
+            updateFrameCounter()
+        }
     }
 
     private fun updateFrameCounter() {
@@ -694,6 +723,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updatePlayLabel()
             }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state != Player.STATE_READY || !openAtEnd) return
+                val ready = player ?: return
+                val dur = ready.duration
+                if (dur <= 0) return // duration still unknown, wait for the next READY
+                openAtEnd = false
+                // land ON the last frame, not one past the end of the clip
+                val frameMs = 1000.0 / reviewFps
+                reviewPosMs = (dur.toDouble() - frameMs).coerceAtLeast(0.0)
+                ready.setSeekParameters(SeekParameters.EXACT)
+                ready.seekTo(reviewPosMs.roundToLong())
+                syncSeekBar()
+                updateFrameCounter()
+            }
         })
         playerView.player = p
         player = p
@@ -751,9 +795,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 if (p.isPlaying) p.pause()
                 val dur = p.duration
                 if (dur > 0) {
+                    // back to cheap seeks for as long as the finger keeps moving:
+                    // the settle below may have switched us to EXACT
+                    p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                     reviewPosMs = dur.toDouble() * progress / 1000.0
                     requestSeek()
                     updateFrameCounter()
+                    mainHandler.removeCallbacks(coarseSettle)
+                    mainHandler.postDelayed(coarseSettle, 140)
                 }
             }
 
@@ -762,6 +811,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
 
             override fun onStopTrackingTouch(sb: SeekBar) {
+                mainHandler.removeCallbacks(coarseSettle)
                 val p = player ?: return
                 p.setSeekParameters(SeekParameters.EXACT)
                 p.seekTo(reviewPosMs.roundToLong())
@@ -780,6 +830,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         jogStrip.onFrameStep = { dir ->
             val p = player
             if (p != null) {
+                // never inherit the coarse bar's keyframe seeks: landing on the
+                // exact frame is the whole point of this control
+                p.setSeekParameters(SeekParameters.EXACT)
                 val frameMs = 1000.0 / reviewFps
                 val dur = if (p.duration > 0) p.duration.toDouble() else 0.0
                 reviewPosMs = wrapPos(reviewPosMs + dir * frameMs, dur)
@@ -842,9 +895,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         copyLinesToReview()
         val p = ensurePlayer()
         p.setMediaItem(MediaItem.fromUri(uri))
-        p.prepare()
         p.setPlaybackSpeed(reviewSpeed)
-        p.playWhenReady = true
+        // Open paused on the final swing. Playing from the start means sitting
+        // through minutes of ball-striking to reach the shot just hit.
+        openAtEnd = true
+        p.playWhenReady = false
+        p.prepare()
+        updatePlayLabel()
         mainHandler.removeCallbacks(seekPoll)
         mainHandler.post(seekPoll)
     }
