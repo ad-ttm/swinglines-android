@@ -76,6 +76,7 @@
 
             <Button android:id="@+id/btnFlip" style="@style/Tool" android:text="@string/flip" />
             <Button android:id="@+id/btnSpeed" style="@style/Tool" android:text="@string/speed_normal" />
+            <Button android:id="@+id/btnAuto" style="@style/Tool" android:text="@string/auto_off" />
             <Button android:id="@+id/btnClips" style="@style/Tool" android:text="@string/clips" />
             <Button android:id="@+id/btnSetups" style="@style/Tool" android:text="@string/setups" />
             <Button android:id="@+id/btnSettings" style="@style/Tool" android:text="@string/settings" />

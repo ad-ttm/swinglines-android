@@ -114,6 +114,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     // swing he wants is the last one, not the first. Set while a clip is being
     // prepared; the duration is not known until the player reports READY.
     private var openAtEnd = false
+
+    /* ---------- autorecord: a clip per strike ---------- */
+    // Off, low, medium or high. Persisted, because a coach sets it once for the
+    // range he teaches at and does not want to think about it again.
+    private var autoSensitivity = StrikeDetector.OFF
+    private var strikeDetector: StrikeDetector? = null
+    private val cutPool: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor()
     // dimensions of the recorded frame as displayed (after rotation), used to
     // re-map live-view lines onto the letterboxed replay
     private var recordedFrameW = 1080f
@@ -626,6 +634,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         recording = true
                         recIndicator.visibility = View.VISIBLE
                         btnRecord.alpha = 0.5f
+                        startStrikeDetector()
                     } catch (e: Exception) {
                         Toast.makeText(this@MainActivity, "Record start failed: ${e.message}", Toast.LENGTH_LONG).show()
                         abortRecording()
@@ -651,6 +660,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun abortRecording() {
+        strikeDetector?.stop()
+        strikeDetector = null
         try { mediaRecorder?.release() } catch (_: Exception) {}
         mediaRecorder = null
         recorderSurface = null
@@ -667,6 +678,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun stopRecording(openReplay: Boolean) {
         val rec = mediaRecorder ?: return
         val mode = modes[modeIndex]
+        val strikes = strikeDetector?.stop() ?: emptyList()
+        strikeDetector = null
         recording = false
         recIndicator.visibility = View.GONE
         btnRecord.alpha = 1.0f
@@ -701,10 +714,105 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // Don't rebuild the preview session just to tear it down again: openReview
         // now releases the camera, and doing both would race session creation
         // against closing the device.
-        if (ok && openReplay && uri != null) {
+        if (ok && uri != null && strikes.isNotEmpty()) {
+            cutSwings(uri, strikes, mode.fps, openReplay)
+        } else if (ok && openReplay && uri != null) {
             openReview(uri, mode.fps)
         } else {
             startPreview()
+        }
+    }
+
+    private fun startStrikeDetector() {
+        strikeDetector = null
+        if (autoSensitivity == StrikeDetector.OFF) return
+        val d = StrikeDetector(autoSensitivity)
+        if (d.start()) {
+            strikeDetector = d
+        } else {
+            // the mic was refused or is busy. Say so rather than recording a
+            // whole session that silently produces no swings at the end.
+            Toast.makeText(this, "Auto-record couldn't use the mic - recording normally", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun cycleAutoSensitivity() {
+        autoSensitivity = when (autoSensitivity) {
+            StrikeDetector.OFF -> StrikeDetector.MEDIUM
+            StrikeDetector.MEDIUM -> StrikeDetector.HIGH
+            StrikeDetector.HIGH -> StrikeDetector.LOW
+            else -> StrikeDetector.OFF
+        }
+        prefs.edit().putInt("autoSensitivity", autoSensitivity).apply()
+        updateAutoLabel()
+        val note = when (autoSensitivity) {
+            StrikeDetector.OFF -> "Auto-record off - recordings are kept whole"
+            StrikeDetector.HIGH -> "Auto-record high - catches quiet strikes, may pick up the next bay"
+            StrikeDetector.LOW -> "Auto-record low - only clear, close strikes"
+            else -> "Auto-record on - a clip per strike when you stop"
+        }
+        Toast.makeText(this, note, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateAutoLabel() {
+        findViewById<Button>(R.id.btnAuto)?.text = StrikeDetector.label(autoSensitivity)
+    }
+
+    /**
+     * Cut the long recording into one clip per strike, two seconds either side.
+     * The original is kept: a detector that misfires must never be the reason a
+     * coach loses footage, and the cuts can simply be deleted if they are wrong.
+     */
+    private fun cutSwings(src: Uri, strikes: List<Long>, fps: Int, openReplay: Boolean) {
+        Toast.makeText(this, "Cutting ${strikes.size} swings...", Toast.LENGTH_SHORT).show()
+        startPreview()
+        val folder = recordFolder()
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        cutPool.execute {
+            val rotation = SwingCutter.rotationOf(this, src)
+            val durationUs = SwingCutter.durationUsOf(this, src)
+            val made = mutableListOf<Uri>()
+            for ((i, atMs) in strikes.withIndex()) {
+                val startUs = ((atMs - 2000L) * 1000L).coerceAtLeast(0L)
+                var endUs = (atMs + 2000L) * 1000L
+                if (durationUs > 0 && endUs > durationUs) endUs = durationUs
+                if (endUs <= startUs) continue
+                val name = "swing-$stamp-%02d.mp4".format(i + 1)
+                val values = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, folder)
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+                val out = try {
+                    contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                } catch (_: Exception) { null } ?: continue
+                var wrote = false
+                try {
+                    contentResolver.openFileDescriptor(out, "w")?.use { pfd ->
+                        wrote = SwingCutter.cut(this, src, pfd.fileDescriptor, startUs, endUs, rotation)
+                    }
+                } catch (_: Exception) {
+                }
+                if (wrote) {
+                    val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                    try { contentResolver.update(out, done, null, null) } catch (_: Exception) {}
+                    made.add(out)
+                } else {
+                    try { contentResolver.delete(out, null, null) } catch (_: Exception) {}
+                }
+            }
+            runOnUiThread {
+                if (made.isEmpty()) {
+                    Toast.makeText(this, "No swings could be cut - the full recording is in Clips", Toast.LENGTH_LONG).show()
+                    if (openReplay) openReview(src, fps)
+                    return@runOnUiThread
+                }
+                val word = if (made.size == 1) "swing" else "swings"
+                Toast.makeText(this, "${made.size} $word saved", Toast.LENGTH_SHORT).show()
+                // open the LAST one: the swing he just hit is the one he wants
+                if (openReplay) openClip(made.last())
+            }
         }
     }
 
@@ -1187,11 +1295,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private data class ClipRow(val name: String, val uri: Uri, val student: String)
 
     /** Query recorded clips as (label, uri), newest first, optionally filtered to one student. */
-    private fun queryClips(filterStudent: String?): List<Pair<String, Uri>> =
-        queryClipRows(filterStudent).map { r ->
-            (if (filterStudent == null && r.student.isNotEmpty()) "${r.student} / ${r.name}" else r.name) to r.uri
-        }
-
     private fun queryClipRows(filterStudent: String?): List<ClipRow> {
         val out = mutableListOf<ClipRow>()
         try {
@@ -2341,31 +2444,72 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         return fps.coerceIn(12, 300)
     }
 
-    /** Clip picker used by compare panes: session clips plus phone import. */
+    /**
+     * Clip picker used by compare panes: session clips plus phone import.
+     *
+     * Thumbnails, not file names. Every swing is called "swing-" and a
+     * timestamp, so a list of names tells a coach nothing about which swing he
+     * is choosing. This is the same grid and the same bounded thumbnail cache
+     * the Clips panel uses.
+     */
     private fun pickClip(cb: (Uri) -> Unit) {
-        val rows = mutableListOf<Pair<String, Uri?>>()
-        rows.add("➕ From your phone (camera roll)" to null)
-        rows.addAll(queryClips(null))
-        val labels = rows.map { it.first }.toTypedArray()
-        AlertDialog.Builder(this)
+        val rows = queryClipRows(null)
+        val d = resources.displayMetrics.density
+        val pad = (12 * d).toInt()
+
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        container.setPadding(pad, pad, pad, 0)
+
+        val fromPhone = Button(this)
+        fromPhone.text = "➕ From your phone (camera roll)"
+        container.addView(fromPhone)
+
+        val grid = android.widget.GridView(this)
+        grid.numColumns = 3
+        grid.verticalSpacing = pad / 2
+        grid.horizontalSpacing = pad / 2
+        grid.adapter = ClipsAdapter(rows)
+        container.addView(
+            grid,
+            LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                (380 * d).toInt()
+            )
+        )
+
+        if (rows.isEmpty()) {
+            val empty = TextView(this)
+            empty.text = "No swings recorded yet"
+            empty.setTextColor(Color.WHITE)
+            empty.setPadding(0, pad, 0, pad)
+            container.addView(empty, 1)
+        }
+
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Choose a swing")
-            .setItems(labels) { _, which ->
-                val (_, uri) = rows[which]
-                if (uri == null) {
-                    CrashReporter.crumb("opening camera roll picker")
-                    CrashReporter.remark(this)
-                    pendingPick = cb
-                    importLauncher.launch(
-                        androidx.activity.result.PickVisualMediaRequest(
-                            ActivityResultContracts.PickVisualMedia.VideoOnly
-                        )
-                    )
-                } else {
-                    cb(uri)
-                }
-            }
+            .setView(container)
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+
+        fromPhone.setOnClickListener {
+            dlg.dismiss()
+            CrashReporter.crumb("opening camera roll picker")
+            CrashReporter.remark(this)
+            pendingPick = cb
+            importLauncher.launch(
+                androidx.activity.result.PickVisualMediaRequest(
+                    ActivityResultContracts.PickVisualMedia.VideoOnly
+                )
+            )
+        }
+        grid.setOnItemClickListener { _, _, pos, _ ->
+            rows.getOrNull(pos)?.let {
+                dlg.dismiss()
+                cb(it.uri)
+            }
+        }
+        dlg.show()
     }
 
     /* ================================================================
@@ -2430,6 +2574,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnSetups).setOnClickListener { showSetups() }
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showFeatureSettings() }
         findViewById<Button>(R.id.btnClips).setOnClickListener { showClips() }
+        findViewById<Button>(R.id.btnAuto).setOnClickListener { cycleAutoSensitivity() }
+        autoSensitivity = prefs.getInt("autoSensitivity", StrikeDetector.OFF)
+        updateAutoLabel()
         findViewById<Button>(R.id.btnStudent).setOnClickListener { showStudentPicker() }
         updateStudentButton()
         btnRecord.setOnClickListener { toggleRecording() }
@@ -2449,6 +2596,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
         Triple("feat.level", "Spirit level", R.id.levelView),
         Triple("feat.clips", "Clips button", R.id.btnClips),
+        Triple("feat.auto", "Auto-record button", R.id.btnAuto),
         Triple("feat.student", "Student folders", R.id.btnStudent)
         // Compare is deliberately NOT hideable (like Speed): a stale hidden
         // setting once made it vanish for the coach and nobody could tell why.
