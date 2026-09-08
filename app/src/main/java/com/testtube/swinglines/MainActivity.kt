@@ -755,7 +755,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun updateAutoLabel() {
-        findViewById<Button>(R.id.btnAuto)?.text = StrikeDetector.label(autoSensitivity)
+        val b = findViewById<Button>(R.id.btnAuto) ?: return
+        b.text = StrikeDetector.label(autoSensitivity)
+        // armed reads green on the live screen, so the state is obvious before
+        // the coach presses record rather than only after he stops
+        val on = autoSensitivity != StrikeDetector.OFF
+        b.setBackgroundResource(if (on) R.drawable.pill_bg_on else R.drawable.pill_bg)
+        b.setTextColor(Color.parseColor(if (on) "#DFFFE8" else "#EEF2EF"))
+        // keeps the pill narrow enough that Menu, Lesson, Auto and REC all fit
+        // across a 360dp phone at once
+        val pad = (10 * resources.displayMetrics.density).toInt()
+        b.setPadding(pad, b.paddingTop, pad, b.paddingBottom)
     }
 
     /**
@@ -2596,10 +2606,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         Triple("feat.caps", "Camera info button", R.id.btnCaps),
         Triple("feat.level", "Spirit level", R.id.levelView),
         Triple("feat.clips", "Clips button", R.id.btnClips),
-        Triple("feat.auto", "Auto-record button", R.id.btnAuto),
         Triple("feat.student", "Student folders", R.id.btnStudent)
-        // Compare is deliberately NOT hideable (like Speed): a stale hidden
-        // setting once made it vanish for the coach and nobody could tell why.
+        // Compare, Speed and Auto-record are deliberately NOT hideable: a stale
+        // hidden setting once made Compare vanish for the coach and nobody could
+        // tell why, and Auto-record was missed entirely in v0.17.0, so it now
+        // sits on the live screen where it cannot be switched off by accident.
     )
 
     private fun applyFeaturePrefs() {

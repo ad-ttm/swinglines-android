@@ -43,10 +43,10 @@ class StrikeDetector(private val sensitivity: Int) {
         private const val FLOOR_RISE = 0.02f    // how fast the noise floor tracks
 
         fun label(sensitivity: Int): String = when (sensitivity) {
-            LOW -> "Auto: low"
-            MEDIUM -> "Auto: med"
-            HIGH -> "Auto: high"
-            else -> "Auto: off"
+            LOW -> "\u29bf Auto: low"
+            MEDIUM -> "\u29bf Auto: med"
+            HIGH -> "\u29bf Auto: high"
+            else -> "\u29bf Auto: off"
         }
 
         /** How far above the noise floor a sound has to jump to count. */
