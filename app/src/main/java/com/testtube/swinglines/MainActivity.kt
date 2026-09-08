@@ -341,6 +341,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // marker producing a spurious report is cheap; a missed crash is not.
         CrashReporter.crumb("app backgrounded (picker, home or lock)")
         sensorManager?.unregisterListener(this)
+        // going to the home screen must not queue a recording that starts on
+        // its own when he comes back
+        cancelAutoStop()
         if (recording) stopRecording(openReplay = false)
         closeCamera()
         super.onPause()
@@ -498,9 +501,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
                     )
                     try { session.setRepeatingRequest(builder.build(), null, mainHandler) } catch (_: Exception) {}
+                    maybeResumeAutoRecording()
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
+                    resumeRecordingWhenLive = false
                     Toast.makeText(this@MainActivity, "Preview failed to start", Toast.LENGTH_LONG).show()
                 }
             }, mainHandler)
@@ -555,10 +560,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
        ================================================================ */
 
     private fun toggleRecording() {
+        // his hand on the button beats anything the detector has queued
+        cancelAutoStop()
         if (recording) stopRecording(openReplay = true) else startRecording()
     }
 
     private fun startRecording() {
+        if (recording) return
         val device = cameraDevice ?: run {
             Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show()
             return
@@ -723,10 +731,71 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    /**
+     * Auto-review: the swing pops up as soon as it is hit.
+     *
+     * A clip cannot be cut out of the file while MediaRecorder is still writing
+     * it, so the recording is stopped a couple of seconds after the strike, the
+     * swing is cut and opened, and recording starts again by itself when the
+     * coach taps Back to live. There is a second or so of camera restart in
+     * between, which is why the strike that triggers it is always kept whole.
+     */
+    private var autoStopPending = false
+    private var resumeRecordingWhenLive = false
+
+    private val autoStopRunnable = Runnable {
+        autoStopPending = false
+        if (!recording) return@Runnable
+        resumeRecordingWhenLive = true
+        stopRecording(openReplay = true)
+    }
+
+    private fun onStrikeHeard() {
+        if (!recording || autoStopPending) return
+        autoStopPending = true
+        // 2.5s, not 2s: the cut wants two full seconds after the strike and the
+        // encoder trims a little off the tail when it is stopped
+        mainHandler.postDelayed(autoStopRunnable, 2500)
+    }
+
+    /**
+     * Called when the preview is live again. Never silent: an app that starts
+     * recording on its own has to say so, or the coach cannot tell whether the
+     * next swing is being caught.
+     */
+    private fun maybeResumeAutoRecording() {
+        if (!resumeRecordingWhenLive) return
+        if (reviewPanel.visibility == View.VISIBLE) return
+        if (comparePanel.visibility == View.VISIBLE) return
+        if (autoSensitivity == StrikeDetector.OFF) {
+            resumeRecordingWhenLive = false
+            return
+        }
+        resumeRecordingWhenLive = false
+        // a beat after the session is configured, so the first frames the
+        // encoder sees are real ones
+        mainHandler.postDelayed({
+            if (recording) return@postDelayed
+            if (reviewPanel.visibility == View.VISIBLE) return@postDelayed
+            if (comparePanel.visibility == View.VISIBLE) return@postDelayed
+            startRecording()
+            if (recording) {
+                Toast.makeText(this, "Recording again - waiting for the next strike", Toast.LENGTH_SHORT).show()
+            }
+        }, 400)
+    }
+
+    private fun cancelAutoStop() {
+        autoStopPending = false
+        resumeRecordingWhenLive = false
+        mainHandler.removeCallbacks(autoStopRunnable)
+    }
+
     private fun startStrikeDetector() {
         strikeDetector = null
         if (autoSensitivity == StrikeDetector.OFF) return
         val d = StrikeDetector(autoSensitivity)
+        d.onStrike = { runOnUiThread { onStrikeHeard() } }
         if (d.start()) {
             strikeDetector = d
         } else {
@@ -793,6 +862,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun applyAutoSensitivity(value: Int) {
+        if (value == StrikeDetector.OFF) cancelAutoStop()
         autoSensitivity = value
         prefs.edit().putInt("autoSensitivity", autoSensitivity).apply()
         updateAutoLabel()
@@ -825,7 +895,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
      * coach loses footage, and the cuts can simply be deleted if they are wrong.
      */
     private fun cutSwings(src: Uri, strikes: List<Long>, fps: Int, openReplay: Boolean) {
-        Toast.makeText(this, "Cutting ${strikes.size} swings...", Toast.LENGTH_SHORT).show()
+        // one strike per recording is now the normal case, so "1 swings" would
+        // be on screen constantly
+        val cutting = if (strikes.size == 1) "Cutting the swing..." else "Cutting ${strikes.size} swings..."
+        Toast.makeText(this, cutting, Toast.LENGTH_SHORT).show()
         startPreview()
         val folder = recordFolder()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())

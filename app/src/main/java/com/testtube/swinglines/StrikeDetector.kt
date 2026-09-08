@@ -28,6 +28,13 @@ class StrikeDetector(private val sensitivity: Int) {
     /** Times of detected strikes, in ms from the start of listening. */
     val strikes = mutableListOf<Long>()
 
+    /**
+     * Called on the listening thread the instant a strike is heard, so the
+     * screen can react to the swing that was just hit instead of waiting for
+     * the coach to stop the recording. Post to the main thread inside it.
+     */
+    @Volatile var onStrike: ((Long) -> Unit)? = null
+
     private var thread: Thread? = null
     @Volatile private var running = false
 
@@ -117,6 +124,7 @@ class StrikeDetector(private val sensitivity: Int) {
                     if (jumped && atMs - lastStrikeMs >= REFRACTORY_MS) {
                         lastStrikeMs = atMs
                         synchronized(strikes) { strikes.add(atMs) }
+                        try { onStrike?.invoke(atMs) } catch (_: Exception) {}
                     }
                     // let the floor follow the room, but never let a strike drag
                     // it up: that would deafen the detector to the next one
