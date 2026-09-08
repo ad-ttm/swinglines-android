@@ -732,17 +732,68 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         } else {
             // the mic was refused or is busy. Say so rather than recording a
             // whole session that silently produces no swings at the end.
-            Toast.makeText(this, "Auto-record couldn't use the mic - recording normally", Toast.LENGTH_LONG).show()
+            val denied = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+                PackageManager.PERMISSION_GRANTED
+            Toast.makeText(
+                this,
+                if (denied) {
+                    "Auto-record has no microphone permission, so this recording is kept whole. " +
+                        "Android Settings > Apps > SeePath > Permissions."
+                } else {
+                    "Auto-record couldn't use the mic - recording normally"
+                },
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
+    /**
+     * The sensitivity the coach asked for, held while Android shows the mic
+     * prompt. Auto-record listens for the strike on the microphone, so turning
+     * it on without the permission just produces a dead setting: the button
+     * says on, and nothing is ever cut.
+     */
+    private var pendingAutoSensitivity = StrikeDetector.OFF
+
+    private val autoMicLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                applyAutoSensitivity(pendingAutoSensitivity)
+            } else {
+                // leave it visibly off rather than armed-but-deaf
+                applyAutoSensitivity(StrikeDetector.OFF)
+                Toast.makeText(
+                    this,
+                    "Auto-record needs the microphone to hear each strike. Turn it on under " +
+                        "Android Settings > Apps > SeePath > Permissions.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            pendingAutoSensitivity = StrikeDetector.OFF
+        }
+
     private fun cycleAutoSensitivity() {
-        autoSensitivity = when (autoSensitivity) {
+        val next = when (autoSensitivity) {
             StrikeDetector.OFF -> StrikeDetector.MEDIUM
             StrikeDetector.MEDIUM -> StrikeDetector.HIGH
             StrikeDetector.HIGH -> StrikeDetector.LOW
             else -> StrikeDetector.OFF
         }
+        // ask at the moment he turns it on, not silently at the start of the
+        // next recording, where the failure looked like the feature missing
+        if (next != StrikeDetector.OFF &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingAutoSensitivity = next
+            autoMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        applyAutoSensitivity(next)
+    }
+
+    private fun applyAutoSensitivity(value: Int) {
+        autoSensitivity = value
         prefs.edit().putInt("autoSensitivity", autoSensitivity).apply()
         updateAutoLabel()
         val note = when (autoSensitivity) {
@@ -2586,6 +2637,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnClips).setOnClickListener { showClips() }
         findViewById<Button>(R.id.btnAuto).setOnClickListener { cycleAutoSensitivity() }
         autoSensitivity = prefs.getInt("autoSensitivity", StrikeDetector.OFF)
+        // the permission can be taken away between sessions. Showing armed
+        // without the mic is the same dead setting as never asking for it.
+        if (autoSensitivity != StrikeDetector.OFF &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            autoSensitivity = StrikeDetector.OFF
+            prefs.edit().putInt("autoSensitivity", StrikeDetector.OFF).apply()
+        }
         updateAutoLabel()
         findViewById<Button>(R.id.btnStudent).setOnClickListener { showStudentPicker() }
         updateStudentButton()
