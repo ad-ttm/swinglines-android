@@ -341,10 +341,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // marker producing a spurious report is cheap; a missed crash is not.
         CrashReporter.crumb("app backgrounded (picker, home or lock)")
         sensorManager?.unregisterListener(this)
-        // going to the home screen must not queue a recording that starts on
-        // its own when he comes back
+        // a queued auto-stop must not fire on the way back, but if auto-record
+        // owns this recording it does resume, because green means rolling
+        val wasAutoRolling = recording && autoSensitivity != StrikeDetector.OFF
         cancelAutoStop()
         if (recording) stopRecording(openReplay = false)
+        resumeRecordingWhenLive = wasAutoRolling
         closeCamera()
         super.onPause()
     }
@@ -562,7 +564,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun toggleRecording() {
         // his hand on the button beats anything the detector has queued
         cancelAutoStop()
-        if (recording) stopRecording(openReplay = true) else startRecording()
+        if (recording) {
+            // stopping by hand also switches auto off: a green pill over a
+            // camera that is not rolling is the bug this all came from
+            if (autoSensitivity != StrikeDetector.OFF) {
+                autoSensitivity = StrikeDetector.OFF
+                prefs.edit().putInt("autoSensitivity", StrikeDetector.OFF).apply()
+                updateAutoLabel()
+            }
+            stopRecording(openReplay = true)
+        } else {
+            startRecording()
+        }
     }
 
     private fun startRecording() {
@@ -640,10 +653,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         }
                         rec.start()
                         recording = true
+                        recordingStartedAt = android.os.SystemClock.elapsedRealtime()
                         recIndicator.visibility = View.VISIBLE
                         btnRecord.alpha = 0.5f
                         startStrikeDetector()
+                        if (announceResume) {
+                            announceResume = false
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Recording again - waiting for the next strike",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     } catch (e: Exception) {
+                        announceResume = false
                         Toast.makeText(this@MainActivity, "Record start failed: ${e.message}", Toast.LENGTH_LONG).show()
                         abortRecording()
                     }
@@ -668,6 +691,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun abortRecording() {
+        announceResume = false
+        // the recording never got going, so auto-record must not sit there
+        // green claiming otherwise
+        if (autoSensitivity != StrikeDetector.OFF) {
+            cancelAutoStop()
+            autoSensitivity = StrikeDetector.OFF
+            prefs.edit().putInt("autoSensitivity", StrikeDetector.OFF).apply()
+            updateAutoLabel()
+        }
         strikeDetector?.stop()
         strikeDetector = null
         try { mediaRecorder?.release() } catch (_: Exception) {}
@@ -742,6 +774,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
      */
     private var autoStopPending = false
     private var resumeRecordingWhenLive = false
+    private var recordingStartedAt = 0L
+    private var announceResume = false
 
     private val autoStopRunnable = Runnable {
         autoStopPending = false
@@ -778,10 +812,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (recording) return@postDelayed
             if (reviewPanel.visibility == View.VISIBLE) return@postDelayed
             if (comparePanel.visibility == View.VISIBLE) return@postDelayed
+            // announced when the recorder actually starts, not here: recording
+            // is set on the session callback, so it is still false at this point
+            announceResume = true
             startRecording()
-            if (recording) {
-                Toast.makeText(this, "Recording again - waiting for the next strike", Toast.LENGTH_SHORT).show()
-            }
         }, 400)
     }
 
@@ -794,7 +828,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun startStrikeDetector() {
         strikeDetector = null
         if (autoSensitivity == StrikeDetector.OFF) return
-        val d = StrikeDetector(autoSensitivity)
+        val into = if (recordingStartedAt > 0L)
+            (android.os.SystemClock.elapsedRealtime() - recordingStartedAt).coerceAtLeast(0L) else 0L
+        val d = StrikeDetector(autoSensitivity, into)
         d.onStrike = { runOnUiThread { onStrikeHeard() } }
         if (d.start()) {
             strikeDetector = d
@@ -861,18 +897,57 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         applyAutoSensitivity(next)
     }
 
+    /**
+     * Green has to mean rolling.
+     *
+     * Auto-record used to be a modifier on manual recording: the pill went
+     * green, the mic was not listening, and nothing happened until the red
+     * button was pressed as well. Rich hit a bucket of balls against a green
+     * button and got nothing, which is exactly what the code did. Switching it
+     * on now starts the recording, and switching it off stops it, so the colour
+     * of the pill is never a lie about what the camera is doing.
+     */
     private fun applyAutoSensitivity(value: Int) {
-        if (value == StrikeDetector.OFF) cancelAutoStop()
+        val wasOn = autoSensitivity != StrikeDetector.OFF
         autoSensitivity = value
         prefs.edit().putInt("autoSensitivity", autoSensitivity).apply()
         updateAutoLabel()
-        val note = when (autoSensitivity) {
-            StrikeDetector.OFF -> "Auto-record off - recordings are kept whole"
+
+        if (value == StrikeDetector.OFF) {
+            cancelAutoStop()
+            if (recording) stopRecording(openReplay = false)
+            Toast.makeText(this, "Auto-record off - stopped", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val note = when (value) {
             StrikeDetector.HIGH -> "Auto-record high - catches quiet strikes, may pick up the next bay"
             StrikeDetector.LOW -> "Auto-record low - only clear, close strikes"
-            else -> "Auto-record on - a clip per strike when you stop"
+            else -> "Auto-record on - hit a ball and the swing comes up"
         }
         Toast.makeText(this, note, Toast.LENGTH_SHORT).show()
+
+        when {
+            // already listening: just retune it, no need to break the recording
+            recording && strikeDetector != null -> strikeDetector?.sensitivity = value
+            // he switched it on part way through a recording he started himself
+            recording -> startStrikeDetector()
+            // the normal case: green starts the camera rolling
+            !wasOn -> startAutoRecordingIfLive()
+        }
+    }
+
+    /** Start rolling for auto-record, unless a panel is up over the live view. */
+    private fun startAutoRecordingIfLive() {
+        if (recording) return
+        if (reviewPanel.visibility == View.VISIBLE) return
+        if (comparePanel.visibility == View.VISIBLE) return
+        if (cameraDevice == null) {
+            // the camera is still opening. Roll as soon as the preview is live.
+            resumeRecordingWhenLive = true
+            return
+        }
+        startRecording()
     }
 
     private fun updateAutoLabel() {
@@ -2709,16 +2784,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         findViewById<Button>(R.id.btnSettings).setOnClickListener { showFeatureSettings() }
         findViewById<Button>(R.id.btnClips).setOnClickListener { showClips() }
         findViewById<Button>(R.id.btnAuto).setOnClickListener { cycleAutoSensitivity() }
-        autoSensitivity = prefs.getInt("autoSensitivity", StrikeDetector.OFF)
-        // the permission can be taken away between sessions. Showing armed
-        // without the mic is the same dead setting as never asking for it.
-        if (autoSensitivity != StrikeDetector.OFF &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            autoSensitivity = StrikeDetector.OFF
-            prefs.edit().putInt("autoSensitivity", StrikeDetector.OFF).apply()
-        }
+        // Deliberately not restored across launches. Green now means the camera
+        // is rolling, and an app that starts recording the moment it opens is
+        // worse than one tap at the start of a lesson.
+        autoSensitivity = StrikeDetector.OFF
+        prefs.edit().putInt("autoSensitivity", StrikeDetector.OFF).apply()
         updateAutoLabel()
         findViewById<Button>(R.id.btnStudent).setOnClickListener { showStudentPicker() }
         updateStudentButton()
@@ -2779,10 +2849,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun cycleSpeed() {
-        if (recording) {
-            Toast.makeText(this, "Stop recording to change speed", Toast.LENGTH_SHORT).show()
-            return
-        }
+        val resumeAfter = pauseAutoRollingFor("changing speed") ?: return
         modeIndex = (modeIndex + 1) % modes.size
         prefs.edit().putInt("modeIndex", modeIndex).apply()
         btnSpeed.text = modes[modeIndex].label
@@ -2792,17 +2859,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (m.highSpeed) "Slo-mo: ${m.size.width}x${m.size.height} @ ${m.fps}fps" else "Standard speed",
             Toast.LENGTH_SHORT
         ).show()
+        resumeRecordingWhenLive = resumeAfter
         startPreview()
     }
 
     private fun flipCamera() {
-        if (recording) {
-            Toast.makeText(this, "Stop recording before flipping", Toast.LENGTH_SHORT).show()
-            return
-        }
+        // with auto-record on the camera is always rolling, so refusing here
+        // would make Flip permanently unusable. Pause it and pick it back up.
+        val resumeAfter = pauseAutoRollingFor("flipping") ?: return
         facingFront = !facingFront
         closeCamera()
+        resumeRecordingWhenLive = resumeAfter
         if (previewTexture.isAvailable) openCamera()
+    }
+
+    /**
+     * Stop an auto-record roll so a setting can be changed, and report whether
+     * it should start again afterwards. Returns null if the caller should give
+     * up because a recording the coach started by hand is running.
+     */
+    private fun pauseAutoRollingFor(what: String): Boolean? {
+        if (!recording) return false
+        if (autoSensitivity == StrikeDetector.OFF) {
+            Toast.makeText(this, "Stop recording before $what", Toast.LENGTH_SHORT).show()
+            return null
+        }
+        cancelAutoStop()   // also clears resumeRecordingWhenLive
+        stopRecording(openReplay = false)
+        return true
     }
 
     private fun refreshToolHighlight() {

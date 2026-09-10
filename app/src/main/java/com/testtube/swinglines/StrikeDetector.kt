@@ -23,7 +23,14 @@ import kotlin.math.sqrt
  * sensitivity setting is for, and why the long recording is kept rather than
  * thrown away after cutting.
  */
-class StrikeDetector(private val sensitivity: Int) {
+class StrikeDetector(sensitivity: Int, private val baseMs: Long = 0L) {
+
+    /**
+     * Live, so the coach can change how fussy it is without stopping the
+     * recording. Restarting the detector instead would reset its timebase and
+     * the cuts would land in the wrong place.
+     */
+    @Volatile var sensitivity: Int = sensitivity
 
     /** Times of detected strikes, in ms from the start of listening. */
     val strikes = mutableListOf<Long>()
@@ -100,7 +107,6 @@ class StrikeDetector(private val sensitivity: Int) {
         running = true
         val t = Thread {
             val buf = ShortArray(WINDOW)
-            val threshold = factor(sensitivity)
             var floor = -1f
             var samples = 0L
             var lastStrikeMs = -REFRACTORY_MS
@@ -120,11 +126,15 @@ class StrikeDetector(private val sensitivity: Int) {
                 if (floor < 0f) {
                     floor = level // first window sets the starting floor
                 } else {
-                    val jumped = level > floor * threshold && level > MIN_LEVEL
+                    val jumped = level > floor * factor(sensitivity) && level > MIN_LEVEL
                     if (jumped && atMs - lastStrikeMs >= REFRACTORY_MS) {
                         lastStrikeMs = atMs
-                        synchronized(strikes) { strikes.add(atMs) }
-                        try { onStrike?.invoke(atMs) } catch (_: Exception) {}
+                        // baseMs is how far into the recording this detector
+                        // started, so the times stay video positions even when
+                        // auto-record is switched on mid-recording
+                        val videoMs = atMs + baseMs
+                        synchronized(strikes) { strikes.add(videoMs) }
+                        try { onStrike?.invoke(videoMs) } catch (_: Exception) {}
                     }
                     // let the floor follow the room, but never let a strike drag
                     // it up: that would deafen the detector to the next one
