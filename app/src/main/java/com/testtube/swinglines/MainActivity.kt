@@ -341,12 +341,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // marker producing a spurious report is cheap; a missed crash is not.
         CrashReporter.crumb("app backgrounded (picker, home or lock)")
         sensorManager?.unregisterListener(this)
-        // a queued auto-stop must not fire on the way back, but if auto-record
-        // owns this recording it does resume, because green means rolling
-        val wasAutoRolling = recording && autoSensitivity != StrikeDetector.OFF
+        // a queued auto-stop must not fire on the way back. Auto-record itself
+        // stays on, and the live view rolling again is handled by the same rule
+        // that handles every other return to live.
         cancelAutoStop()
+        autoRollQueued = false
         if (recording) stopRecording(openReplay = false)
-        resumeRecordingWhenLive = wasAutoRolling
         closeCamera()
         super.onPause()
     }
@@ -464,6 +464,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (reviewPanel.visibility == View.VISIBLE) return
         if (comparePanel.visibility == View.VISIBLE) return
         maybeOpenCamera()
+        // if the camera was already open there is no configure callback coming,
+        // so the auto-roll rule has to be run here as well
+        maybeResumeAutoRecording()
     }
 
     private fun closeCamera() {
@@ -507,7 +510,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
-                    resumeRecordingWhenLive = false
                     Toast.makeText(this@MainActivity, "Preview failed to start", Toast.LENGTH_LONG).show()
                 }
             }, mainHandler)
@@ -773,14 +775,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
      * between, which is why the strike that triggers it is always kept whole.
      */
     private var autoStopPending = false
-    private var resumeRecordingWhenLive = false
     private var recordingStartedAt = 0L
     private var announceResume = false
+    private var autoRollQueued = false
+    /** Set while a swing is being cut and is about to take over the screen. */
+    private var autoRollSuppressed = false
 
     private val autoStopRunnable = Runnable {
         autoStopPending = false
         if (!recording) return@Runnable
-        resumeRecordingWhenLive = true
         stopRecording(openReplay = true)
     }
 
@@ -798,20 +801,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
      * next swing is being caught.
      */
     private fun maybeResumeAutoRecording() {
-        if (!resumeRecordingWhenLive) return
-        if (reviewPanel.visibility == View.VISIBLE) return
-        if (comparePanel.visibility == View.VISIBLE) return
-        if (autoSensitivity == StrikeDetector.OFF) {
-            resumeRecordingWhenLive = false
-            return
-        }
-        resumeRecordingWhenLive = false
+        if (!shouldAutoRoll()) return
+        if (autoRollQueued) return
+        autoRollQueued = true
         // a beat after the session is configured, so the first frames the
         // encoder sees are real ones
         mainHandler.postDelayed({
-            if (recording) return@postDelayed
-            if (reviewPanel.visibility == View.VISIBLE) return@postDelayed
-            if (comparePanel.visibility == View.VISIBLE) return@postDelayed
+            autoRollQueued = false
+            if (!shouldAutoRoll()) return@postDelayed
             // announced when the recorder actually starts, not here: recording
             // is set on the session callback, so it is still false at this point
             announceResume = true
@@ -819,9 +816,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }, 400)
     }
 
+    /**
+     * Auto-record is a state, not a one-shot. Once it is green the camera rolls
+     * whenever the live view is showing, through as many swings as the coach
+     * hits, until he taps it off. It used to be armed by a flag set at the
+     * moment of the auto-stop, and that flag was spent by the preview that came
+     * back while the swing was still being cut - so after reviewing one swing
+     * he had to switch auto off and on again to get the next.
+     */
+    private fun shouldAutoRoll(): Boolean =
+        autoSensitivity != StrikeDetector.OFF &&
+            !recording &&
+            !autoRollSuppressed &&
+            cameraDevice != null &&
+            reviewPanel.visibility != View.VISIBLE &&
+            comparePanel.visibility != View.VISIBLE
+
     private fun cancelAutoStop() {
         autoStopPending = false
-        resumeRecordingWhenLive = false
         mainHandler.removeCallbacks(autoStopRunnable)
     }
 
@@ -937,17 +949,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    /** Start rolling for auto-record, unless a panel is up over the live view. */
+    /**
+     * Start rolling for auto-record. If the camera is not open yet there is
+     * nothing to do: the preview's configure callback runs the same rule.
+     */
     private fun startAutoRecordingIfLive() {
-        if (recording) return
-        if (reviewPanel.visibility == View.VISIBLE) return
-        if (comparePanel.visibility == View.VISIBLE) return
-        if (cameraDevice == null) {
-            // the camera is still opening. Roll as soon as the preview is live.
-            resumeRecordingWhenLive = true
-            return
-        }
-        startRecording()
+        if (shouldAutoRoll()) startRecording()
     }
 
     private fun updateAutoLabel() {
@@ -974,7 +981,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         // be on screen constantly
         val cutting = if (strikes.size == 1) "Cutting the swing..." else "Cutting ${strikes.size} swings..."
         Toast.makeText(this, cutting, Toast.LENGTH_SHORT).show()
-        startPreview()
+        if (openReplay) {
+            // the swing is about to take the screen. Bringing the preview back
+            // now would both race openReview's closeCamera and, worse, spend
+            // the auto-roll on a live view the coach never sees.
+            autoRollSuppressed = true
+        } else {
+            startPreview()
+        }
         val folder = recordFolder()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         cutPool.execute {
@@ -1012,15 +1026,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
             runOnUiThread {
+                autoRollSuppressed = false
                 if (made.isEmpty()) {
                     Toast.makeText(this, "No swings could be cut - the full recording is in Clips", Toast.LENGTH_LONG).show()
-                    if (openReplay) openReview(src, fps)
+                    if (openReplay) openReview(src, fps) else maybeResumeAutoRecording()
                     return@runOnUiThread
                 }
                 val word = if (made.size == 1) "swing" else "swings"
                 Toast.makeText(this, "${made.size} $word saved", Toast.LENGTH_SHORT).show()
                 // open the LAST one: the swing he just hit is the one he wants
-                if (openReplay) openClip(made.last())
+                // atEnd = false: an auto-cut swing plays from the beginning
+                if (openReplay) openClip(made.last(), atEnd = false)
             }
         }
     }
@@ -1197,7 +1213,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         reviewOverlay.invalidate()
     }
 
-    private fun openReview(uri: Uri, fps: Int) {
+    /**
+     * [atEnd] opens paused on the last frame. That is right for a whole
+     * session recording, where the shot just hit is at the end, and wrong for
+     * an auto-cut swing, which is four seconds long with the strike in the
+     * middle: there the coach wants to watch it through from the start.
+     */
+    private fun openReview(uri: Uri, fps: Int, atEnd: Boolean = true) {
         CrashReporter.crumb("replay opened, ${fps}fps")
         reviewUri = uri
         reviewFps = fps
@@ -1213,9 +1235,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val p = ensurePlayer()
         p.setMediaItem(MediaItem.fromUri(uri))
         p.setPlaybackSpeed(reviewSpeed)
-        // Open paused on the final swing. Playing from the start means sitting
-        // through minutes of ball-striking to reach the shot just hit.
-        openAtEnd = true
+        openAtEnd = atEnd
         p.playWhenReady = false
         p.prepare()
         updatePlayLabel()
@@ -1463,7 +1483,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     /** Open any clip (ours or imported): read fps/size/rotation from the file
      *  so frame stepping and line mapping stay correct. */
-    private fun openClip(uri: Uri) {
+    private fun openClip(uri: Uri, atEnd: Boolean = true) {
         var fps = 30
         var w = 1080f
         var h = 1920f
@@ -1498,7 +1518,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         fps = fps.coerceIn(12, 300)
         recordedFrameW = w
         recordedFrameH = h
-        openReview(uri, fps)
+        openReview(uri, fps, atEnd)
     }
 
     private data class ClipRow(val name: String, val uri: Uri, val student: String)
@@ -2849,7 +2869,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun cycleSpeed() {
-        val resumeAfter = pauseAutoRollingFor("changing speed") ?: return
+        if (!pauseAutoRollingFor("changing speed")) return
         modeIndex = (modeIndex + 1) % modes.size
         prefs.edit().putInt("modeIndex", modeIndex).apply()
         btnSpeed.text = modes[modeIndex].label
@@ -2859,32 +2879,32 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (m.highSpeed) "Slo-mo: ${m.size.width}x${m.size.height} @ ${m.fps}fps" else "Standard speed",
             Toast.LENGTH_SHORT
         ).show()
-        resumeRecordingWhenLive = resumeAfter
         startPreview()
     }
 
     private fun flipCamera() {
         // with auto-record on the camera is always rolling, so refusing here
         // would make Flip permanently unusable. Pause it and pick it back up.
-        val resumeAfter = pauseAutoRollingFor("flipping") ?: return
+        if (!pauseAutoRollingFor("flipping")) return
         facingFront = !facingFront
         closeCamera()
-        resumeRecordingWhenLive = resumeAfter
         if (previewTexture.isAvailable) openCamera()
     }
 
     /**
-     * Stop an auto-record roll so a setting can be changed, and report whether
-     * it should start again afterwards. Returns null if the caller should give
-     * up because a recording the coach started by hand is running.
+     * Stop an auto-record roll so a setting can be changed. Auto-record stays
+     * on, so the new preview starts rolling again by itself. Returns false if
+     * the caller should give up because a recording the coach started by hand
+     * is running.
      */
-    private fun pauseAutoRollingFor(what: String): Boolean? {
-        if (!recording) return false
+    private fun pauseAutoRollingFor(what: String): Boolean {
+        if (!recording) return true
         if (autoSensitivity == StrikeDetector.OFF) {
             Toast.makeText(this, "Stop recording before $what", Toast.LENGTH_SHORT).show()
-            return null
+            return false
         }
-        cancelAutoStop()   // also clears resumeRecordingWhenLive
+        cancelAutoStop()
+        autoRollQueued = false
         stopRecording(openReplay = false)
         return true
     }
