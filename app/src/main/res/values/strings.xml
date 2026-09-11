@@ -40,4 +40,6 @@
     <string name="share">↗ Share</string>
     <string name="back_to_camera">Camera</string>
     <string name="auto_off">⦿ Auto: off</string>
+    <string name="play_full">▶ Play</string>
+    <string name="delete_swing">🗑 Delete</string>
 </resources>

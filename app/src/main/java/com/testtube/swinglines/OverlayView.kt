@@ -11,7 +11,11 @@ import android.view.View
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * Transparent drawing layer over the camera preview.
@@ -102,6 +106,9 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
     companion object {
         private const val WHOLE_SHAPE = -1
+
+        /** How far off square or 45 a line can be and still be pulled onto it. */
+        private const val SNAP_DEGREES = 6.0
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -193,6 +200,44 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
         return false
     }
 
+    /**
+     * Pull a line onto horizontal, vertical or 45 when it is already close.
+     *
+     * Getting those by hand on a touchscreen is the thing coaches find hardest,
+     * and a shaft line two degrees off is worse than useless as a reference.
+     * The angle is worked out in PIXELS, not in the stored 0..1 coordinates:
+     * the view is not square, so 45 degrees on screen is not 45 degrees there.
+     *
+     * The snapped end is also kept inside the view. Left to run, a snapped line
+     * can leave the screen entirely, and anything drawn outside what the camera
+     * shows cannot come back to the live view.
+     */
+    private fun snapLineEnd(ax: Float, ay: Float, nx: Float, ny: Float, w: Float, h: Float): PointF {
+        val dx = (nx - ax) * w
+        val dy = (ny - ay) * h
+        val len = hypot(dx, dy)
+        // too short to have a meaningful angle, and snapping it would fight the
+        // first few pixels of every new line
+        if (len < dp(28f)) return PointF(nx, ny)
+        val deg = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble()))
+        val nearest = Math.round(deg / 45.0) * 45.0
+        if (abs(deg - nearest) > SNAP_DEGREES) return PointF(nx, ny)
+        val rad = Math.toRadians(nearest)
+        val cosR = cos(rad).toFloat()
+        val sinR = sin(rad).toFloat()
+        var use = len
+        if (abs(cosR) > 1e-4f) {
+            val edge = if (cosR > 0f) (1f - ax) * w else -ax * w
+            use = min(use, edge / cosR)
+        }
+        if (abs(sinR) > 1e-4f) {
+            val edge = if (sinR > 0f) (1f - ay) * h else -ay * h
+            use = min(use, edge / sinR)
+        }
+        if (use <= 0f) return PointF(nx, ny)
+        return PointF(ax + use * cosR / w, ay + use * sinR / h)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val w = width.toFloat()
         val h = height.toFloat()
@@ -257,7 +302,12 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                     if (hypot((nx - downNx) * w, (ny - downNy) * h) > slop) {
                         removeCallbacks(holdRunnable)
                         pendingShape = null
-                        drawing = if (tool == "line" || tool == "circle") {
+                        drawing = if (tool == "line") {
+                            Shape(tool, drawColor, mutableListOf(
+                                PointF(downNx, downNy),
+                                snapLineEnd(downNx, downNy, nx, ny, w, h)
+                            ))
+                        } else if (tool == "circle") {
                             Shape(tool, drawColor, mutableListOf(PointF(downNx, downNy), PointF(nx, ny)))
                         } else {
                             Shape("draw", drawColor, mutableListOf(PointF(downNx, downNy), PointF(nx, ny)))
@@ -275,6 +325,9 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                         for (i in ds.pts.indices) {
                             ds.pts[i] = PointF(ds.pts[i].x + dx, ds.pts[i].y + dy)
                         }
+                    } else if (ds.type == "line") {
+                        val a = ds.pts[1 - dragIdx]
+                        ds.pts[dragIdx] = snapLineEnd(a.x, a.y, nx, ny, w, h)
                     } else {
                         ds.pts[dragIdx] = PointF(nx, ny)
                     }
@@ -286,6 +339,8 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
                 val d = drawing ?: return true
                 if (d.type == "draw") {
                     d.pts.add(PointF(nx, ny))
+                } else if (d.type == "line") {
+                    d.pts[1] = snapLineEnd(d.pts[0].x, d.pts[0].y, nx, ny, w, h)
                 } else {
                     d.pts[1] = PointF(nx, ny)
                 }

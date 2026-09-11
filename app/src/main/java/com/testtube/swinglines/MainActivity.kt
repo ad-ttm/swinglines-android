@@ -781,6 +781,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     /** Set while a swing is being cut and is about to take over the screen. */
     private var autoRollSuppressed = false
 
+    /**
+     * The auto-cut swing on screen and the recording it came out of. Delete is
+     * only offered for these: a clip opened from Clips has no live auto screen
+     * to drop back to, and its source is not something this screen knows about.
+     */
+    private var autoSwingClip: Uri? = null
+    private var autoSwingSource: Uri? = null
+
     private val autoStopRunnable = Runnable {
         autoStopPending = false
         if (!recording) return@Runnable
@@ -1036,7 +1044,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 Toast.makeText(this, "${made.size} $word saved", Toast.LENGTH_SHORT).show()
                 // open the LAST one: the swing he just hit is the one he wants
                 // atEnd = false: an auto-cut swing plays from the beginning
-                if (openReplay) openClip(made.last(), atEnd = false)
+                if (openReplay) {
+                    openClip(made.last(), atEnd = false)
+                    autoSwingClip = made.last()
+                    // only offer to bin the recording behind it when this swing
+                    // is the only thing that came out of it
+                    autoSwingSource = if (made.size == 1) src else null
+                    findViewById<Button>(R.id.btnRevDelete).visibility = View.VISIBLE
+                }
             }
         }
     }
@@ -1099,6 +1114,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 p.play()
             }
         }
+        // "Play the swing": full speed from the start, whatever the slo-mo
+        // buttons were left on. A four second clip, watched the way it happened.
+        findViewById<Button>(R.id.btnPlayFull).setOnClickListener {
+            val p = player ?: return@setOnClickListener
+            if (p.isPlaying) {
+                p.pause()
+                reviewPosMs = p.currentPosition.toDouble()
+                return@setOnClickListener
+            }
+            setSpeed(1.0f)
+            reviewPosMs = 0.0
+            p.setSeekParameters(SeekParameters.EXACT)
+            p.seekTo(0)
+            syncSeekBar()
+            updateFrameCounter()
+            p.play()
+        }
+        findViewById<Button>(R.id.btnRevDelete).setOnClickListener { deleteReviewedSwing() }
         findViewById<Button>(R.id.btnRevStart).setOnClickListener {
             val p = player ?: return@setOnClickListener
             p.pause()
@@ -1228,6 +1261,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         fpsBadge.text = "${fps}fps"
         clipsPanel.visibility = View.GONE
         reviewPanel.visibility = View.VISIBLE
+        autoSwingClip = null
+        autoSwingSource = null
+        findViewById<Button>(R.id.btnRevDelete).visibility = View.GONE
         revMenu.visibility = View.GONE
         // same reasoning as compare: nothing here shows the camera
         closeCamera()
@@ -1299,14 +1335,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    private fun closeReview() {
-        copyLinesToLive()
+    private fun closeReview(copyLines: Boolean = true) {
+        if (copyLines) copyLinesToLive()
         mainHandler.removeCallbacks(seekPoll)
         player?.pause()
         player?.clearMediaItems()
         reviewUri = null
         reviewPanel.visibility = View.GONE
         restoreCameraIfLive()
+    }
+
+    /**
+     * Bin the swing on screen and go straight back to hitting. The recording it
+     * was cut from goes too, so a rejected ball leaves nothing behind - that
+     * pair was doubling up the folder for every swing he threw away.
+     *
+     * No confirmation: this is the button he reaches for between balls, and the
+     * cost of a mis-tap is one swing out of many, not a lesson.
+     */
+    private fun deleteReviewedSwing() {
+        val clip = autoSwingClip
+        val source = autoSwingSource
+        autoSwingClip = null
+        autoSwingSource = null
+        var gone = 0
+        for (u in listOfNotNull(clip, source)) {
+            try {
+                if (contentResolver.delete(u, null, null) > 0) gone++
+            } catch (_: Exception) {
+            }
+        }
+        // lines drawn on a binned swing have nothing to come back to, and the
+        // live view keeps whatever setup lines it already had
+        closeReview(copyLines = false)
+        Toast.makeText(
+            this,
+            if (gone > 0) "Swing deleted" else "Couldn't delete that swing - it is still in Clips",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun setSpeed(s: Float) {
@@ -2750,30 +2816,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             liveMenu.visibility = if (liveMenu.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
 
-        val colorRow = findViewById<LinearLayout>(R.id.colorRow)
-        for ((i, c) in colors.withIndex()) {
-            val b = Button(this)
-            val size = (34 * resources.displayMetrics.density).toInt()
-            val lp = LinearLayout.LayoutParams(size, size)
-            lp.setMargins(8, 8, 8, 8)
-            b.layoutParams = lp
-            val bg = GradientDrawable()
-            bg.shape = GradientDrawable.OVAL
-            bg.setColor(c)
-            bg.setStroke(if (i == 0) 8 else 4, Color.argb(160, 255, 255, 255))
-            b.background = bg
-            b.setOnClickListener {
-                overlay.drawColor = c
-                reviewOverlay.drawColor = c
-                overlayA.drawColor = c
-                overlayB.drawColor = c
-                for (j in 0 until colorRow.childCount) {
-                    val cb = colorRow.getChildAt(j) as Button
-                    val d = cb.background as GradientDrawable
-                    d.setStroke(if (colors[j] == c) 8 else 4, Color.argb(160, 255, 255, 255))
-                }
+        // The analyse screen had no colour picker at all, so a coach could only
+        // change colour by going back to live first. Both rows drive the same
+        // colour and both show the same selection.
+        val colorRows = listOf(
+            findViewById<LinearLayout>(R.id.colorRow),
+            findViewById(R.id.revColorRow)
+        )
+        for (row in colorRows) {
+            for ((i, c) in colors.withIndex()) {
+                val b = Button(this)
+                val size = (34 * resources.displayMetrics.density).toInt()
+                val lp = LinearLayout.LayoutParams(size, size)
+                lp.setMargins(8, 8, 8, 8)
+                b.layoutParams = lp
+                val bg = GradientDrawable()
+                bg.shape = GradientDrawable.OVAL
+                bg.setColor(c)
+                bg.setStroke(if (i == 0) 8 else 4, Color.argb(160, 255, 255, 255))
+                b.background = bg
+                b.setOnClickListener { selectDrawColor(c, colorRows) }
+                row.addView(b)
             }
-            colorRow.addView(b)
         }
 
         fun bindTool(id: Int, tool: String) {
@@ -2907,6 +2971,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         autoRollQueued = false
         stopRecording(openReplay = false)
         return true
+    }
+
+    private fun selectDrawColor(c: Int, rows: List<LinearLayout>) {
+        overlay.drawColor = c
+        reviewOverlay.drawColor = c
+        overlayA.drawColor = c
+        overlayB.drawColor = c
+        for (row in rows) {
+            for (j in 0 until row.childCount) {
+                val d = row.getChildAt(j).background as? GradientDrawable ?: continue
+                d.setStroke(if (colors[j] == c) 8 else 4, Color.argb(160, 255, 255, 255))
+            }
+        }
     }
 
     private fun refreshToolHighlight() {

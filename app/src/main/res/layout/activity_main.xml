@@ -189,6 +189,14 @@
                 style="@style/Pill"
                 android:text="@string/compare" />
 
+            <!-- only shown on an auto-cut swing, where there is a live auto
+                 screen to go straight back to -->
+            <Button
+                android:id="@+id/btnRevDelete"
+                style="@style/Pill"
+                android:text="@string/delete_swing"
+                android:visibility="gone" />
+
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
@@ -231,6 +239,13 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/revColorRow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:orientation="horizontal" />
+
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center_horizontal"
@@ -267,14 +282,15 @@
                 android:shadowRadius="4"
                 android:text="@string/frame_counter_zero" />
 
-            <!-- coarse bar retired at Rich's request - the jog wheel is the control.
-                 Kept in the layout (gone) so position tracking keeps working. -->
+            <!-- Retired once, back at Rich's request after he used the same bar on
+                 the compare screen. It sits ALONGSIDE the jog wheel: the bar is for
+                 getting to roughly the right part of the swing, the wheel for the
+                 frame. -->
             <SeekBar
                 android:id="@+id/reviewSeek"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingVertical="10dp"
-                android:visibility="gone" />
+                android:paddingVertical="10dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -282,6 +298,7 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
+                <Button android:id="@+id/btnPlayFull" style="@style/Tool" android:text="@string/play_full" />
                 <Button android:id="@+id/btnRevStart" style="@style/Tool" android:text="@string/to_start" />
                 <Button android:id="@+id/btnRevBack" style="@style/Tool" android:text="@string/frame_back" />
 
